@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  dispatcher:
+    image: qb-dispatcher:latest
+    # Or build from the local Dockerfile during development:
+    # build: .
+    container_name: qb-dispatcher
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      # Example: set timezone inside the container
+      - TZ=UTC
+    # If you run qBittorrent/Sonarr/Radarr in the same compose project,
+    # place them on this network and point config.yaml URLs at container names.
+    networks:
+      - qbnet
+
+networks:
+  qbnet:
+    driver: bridge
