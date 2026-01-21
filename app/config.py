@@ -23,6 +23,7 @@ class DispatcherSettings:
 	bandwidth_weight: float = 0.1
 	max_downloads: int = 50
 	min_score: float = -1.0
+	admin_api_key: Optional[str] = None
 	submission: SubmissionSettings = field(default_factory=SubmissionSettings)
 
 
@@ -33,6 +34,7 @@ class NodeConfig:
 	username: str
 	password: str
 	min_free_gb: float = 0.0
+	weight: float = 1.0
 
 
 @dataclass
@@ -65,6 +67,7 @@ def parse_config(raw: dict) -> AppConfig:
 		bandwidth_weight=float(dispatcher_raw.get("bandwidth_weight", 0.1)),
 		max_downloads=int(dispatcher_raw.get("max_downloads", 50)),
 		min_score=float(dispatcher_raw.get("min_score", -1.0)),
+		admin_api_key=dispatcher_raw.get("admin_api_key"),
 		submission=submission,
 	)
 
@@ -78,6 +81,7 @@ def parse_config(raw: dict) -> AppConfig:
 				username=str(node["username"]),
 				password=str(node["password"]),
 				min_free_gb=float(node.get("min_free_gb", 0.0)),
+				weight=float(node.get("weight", 1.0)),
 			),
 		)
 

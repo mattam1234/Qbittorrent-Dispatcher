@@ -54,6 +54,19 @@ class ArrStatus(BaseModel):
 	error: Optional[str] = None
 
 
+class DecisionRecord(BaseModel):
+	"""A single recorded routing decision for debugging/inspection."""
+
+	timestamp: float
+	request_name: str
+	request_category: str
+	size_estimate_gb: float
+	selected_node: Optional[str]
+	reason: str
+	status: str
+	attempted_nodes: list[NodeMetrics]
+
+
 class SubmissionConfig(BaseModel):
 	max_retries: int = 2
 	save_path: Optional[str] = None
@@ -74,6 +87,7 @@ class NodeConfigModel(BaseModel):
 	username: str
 	password: str
 	min_free_gb: float = 0.0
+	weight: float = 1.0
 
 
 class ArrInstanceModel(BaseModel):

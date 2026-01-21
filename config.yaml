@@ -7,30 +7,23 @@ dispatcher:
   submission:
     max_retries: 2
     save_path: null
-
 nodes:
-  - name: qbittorrent-1
-    url: http://10.0.0.1:8080
-    username: admin
-    password: secret
-    min_free_gb: 500
-  - name: qbittorrent-2
-    url: http://10.0.0.2:8080
-    username: admin
-    password: secret
-    min_free_gb: 500
-
+- name: qbittorrent-1
+  url: http://10.0.0.1:8080
+  username: admin
+  password: secret
+  min_free_gb: 500.0
+- name: qbittorrent-2
+  url: http://10.0.0.2:8080
+  username: admin
+  password: secret
+  min_free_gb: 500.0
 arr_instances:
-  # Example Sonarr instance; url should point at the API root
-  # (e.g. http://host:8989/api/v3). The /arr endpoint will call
-  # `<url>/system/status` with X-Api-Key.
-  - name: sonarr-main
-    type: sonarr
-    url: http://sonarr:8989/api/v3
-    api_key: YOUR_SONARR_API_KEY
-
-  # Example Radarr instance
-  - name: radarr-main
-    type: radarr
-    url: http://radarr:7878/api/v3
-    api_key: YOUR_RADARR_API_KEY
+- name: sonarr-main
+  type: sonarr
+  url: http://sonarr:8989/api/v3
+  api_key: YOUR_SONARR_API_KEY
+- name: radarr-main
+  type: radarr
+  url: http://radarr:7878/api/v3
+  api_key: YOUR_RADARR_API_KEY

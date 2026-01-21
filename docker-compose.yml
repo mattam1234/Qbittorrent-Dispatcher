@@ -4,13 +4,13 @@ services:
   dispatcher:
     image: qb-dispatcher:latest
     # Or build from the local Dockerfile during development:
-    # build: .
+    build: .
     container_name: qb-dispatcher
     restart: unless-stopped
     ports:
       - "8001:8000"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      - ./config.yaml:/app/config.yaml
     environment:
       # Example: set timezone inside the container
       - TZ=UTC

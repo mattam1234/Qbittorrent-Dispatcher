@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import deque
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Deque, List, Optional, Tuple
 
 from anyio import to_thread
 
 from .config import AppConfig, NodeConfig
-from .models import NodeMetrics, SubmitRequest, SubmitDecision, NodeStatus, DecisionDebug
+from .metrics import inc_submission, update_node_metrics
+from .models import (
+	NodeMetrics,
+	SubmitRequest,
+	SubmitDecision,
+	NodeStatus,
+	DecisionDebug,
+	DecisionRecord,
+)
 from .qb_client import QbittorrentNodeClient, NodeState
 
 logger = logging.getLogger(__name__)
@@ -28,6 +38,7 @@ class Dispatcher:
 	def __init__(self, config: AppConfig) -> None:
 		self.config = config
 		self._clients = {n.name: QbittorrentNodeClient(n) for n in config.nodes}
+		self._history: Deque[DecisionRecord] = deque(maxlen=200)
 
 	async def _gather_node_state(self, node: NodeConfig) -> Tuple[NodeConfig, Optional[NodeState], NodeMetrics]:
 		client = self._clients[node.name]
@@ -70,13 +81,22 @@ class Dispatcher:
 
 		return node, state, metrics
 
-	def _score_node(self, node: NodeConfig, state: NodeState, metrics: NodeMetrics) -> ScoredNode:
+	def _score_node(
+		self,
+		node: NodeConfig,
+		state: NodeState,
+		metrics: NodeMetrics,
+		size_estimate_gb: float = 0.0,
+	) -> ScoredNode:
 		settings = self.config.dispatcher
 
 		excluded = False
 		reason: Optional[str] = None
 
 		free_disk_gb = state.free_disk_gb
+		if size_estimate_gb and free_disk_gb is not None:
+			# Treat estimated size as already allocated when scoring/validating.
+			free_disk_gb = max(0.0, free_disk_gb - size_estimate_gb)
 		if free_disk_gb is None:
 			excluded = True
 			reason = "missing_free_space"
@@ -90,11 +110,13 @@ class Dispatcher:
 
 		score: Optional[float] = None
 		if not excluded:
-			score = (
+			base_score = (
 				(free_disk_gb or 0.0) * settings.disk_weight
 				- state.active_downloads * settings.download_weight
 				- state.global_download_rate_mbps * settings.bandwidth_weight
 			)
+			# Apply per-node weight as a simple multiplier.
+			score = base_score * (node.weight or 1.0)
 
 			if score < settings.min_score:
 				excluded = True
@@ -123,7 +145,7 @@ class Dispatcher:
 			excluded=excluded,
 		)
 
-	async def evaluate_nodes(self) -> List[ScoredNode]:
+	async def evaluate_nodes(self, size_estimate_gb: float = 0.0) -> List[ScoredNode]:
 		tasks = [self._gather_node_state(node) for node in self.config.nodes]
 		results = await asyncio.gather(*tasks)
 
@@ -143,7 +165,17 @@ class Dispatcher:
 				continue
 
 			assert state is not None
-			scored.append(self._score_node(node, state, metrics))
+			scored_node = self._score_node(
+				node,
+				state,
+				metrics,
+				size_estimate_gb=size_estimate_gb,
+			)
+			scored.append(scored_node)
+
+		# push metrics to Prometheus gauges
+		for s in scored:
+			update_node_metrics(s.config.name, s.metrics.reachable, s.score)
 
 		return scored
 
@@ -170,7 +202,7 @@ class Dispatcher:
 		return DecisionDebug(selected_node=selected, reason=reason, nodes=statuses)
 
 	async def submit(self, req: SubmitRequest) -> SubmitDecision:
-		scored_nodes = await self.evaluate_nodes()
+		scored_nodes = await self.evaluate_nodes(size_estimate_gb=req.size_estimate_gb)
 
 		eligible = [n for n in scored_nodes if not n.excluded and n.score is not None]
 		eligible.sort(key=lambda n: n.score or 0.0, reverse=True)
@@ -179,12 +211,15 @@ class Dispatcher:
 
 		if not eligible:
 			logger.warning("No eligible nodes for submission", extra={"request": req.model_dump()})
-			return SubmitDecision(
+			decision = SubmitDecision(
 				selected_node=None,
 				reason="no_eligible_nodes",
 				status="rejected",
 				attempted_nodes=attempted_metrics,
 			)
+			inc_submission(decision.status)
+			self._record_decision(req, decision)
+			return decision
 
 		max_retries = max(1, self.config.dispatcher.submission.max_retries)
 
@@ -215,12 +250,15 @@ class Dispatcher:
 					},
 				)
 
-				return SubmitDecision(
+				decision = SubmitDecision(
 					selected_node=node.config.name,
 					reason="highest_score",
 					status="accepted",
 					attempted_nodes=attempted_metrics,
 				)
+				inc_submission(decision.status)
+				self._record_decision(req, decision)
+				return decision
 			except Exception as exc:  # noqa: BLE001
 				last_error = str(exc)
 				logger.exception(
@@ -232,10 +270,39 @@ class Dispatcher:
 					},
 				)
 
-		return SubmitDecision(
+		decision = SubmitDecision(
 			selected_node=None,
 			reason=f"submission_failed_all_nodes: {last_error}",
 			status="failed",
 			attempted_nodes=attempted_metrics,
 		)
+		inc_submission(decision.status)
+		self._record_decision(req, decision)
+		return decision
+
+	def _record_decision(self, req: SubmitRequest, decision: SubmitDecision) -> None:
+		"""Append a DecisionRecord to the in-memory history buffer."""
+
+		record = DecisionRecord(
+			timestamp=time.time(),
+			request_name=req.name,
+			request_category=req.category,
+			size_estimate_gb=req.size_estimate_gb,
+			selected_node=decision.selected_node,
+			reason=decision.reason,
+			status=decision.status,
+			attempted_nodes=decision.attempted_nodes,
+		)
+		self._history.append(record)
+
+	def get_decisions(self, limit: int = 50) -> List[DecisionRecord]:
+		"""Return the most recent routing decisions, newest last."""
+
+		if limit <= 0:
+			return []
+		# deque keeps order oldest -> newest
+		items = list(self._history)
+		if len(items) <= limit:
+			return items
+		return items[-limit:]
 

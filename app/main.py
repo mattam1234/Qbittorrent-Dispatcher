@@ -4,18 +4,29 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Form, Response
+from anyio import to_thread
+from fastapi import FastAPI, HTTPException, Form, Response, Request, Depends
 from fastapi.responses import PlainTextResponse, HTMLResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from .config import load_config, AppConfig, DEFAULT_CONFIG_PATH, parse_config
+from .config import (
+	load_config,
+	AppConfig,
+	DEFAULT_CONFIG_PATH,
+	parse_config,
+	ArrInstanceConfig,
+	NodeConfig as NodeConfigDC,
+)
 from .dispatcher import Dispatcher
 from .models import (
 	SubmitRequest,
 	SubmitDecision,
 	NodeStatus,
+	NodeMetrics,
 	DecisionDebug,
 	ConfigRaw,
 	ArrStatus,
+	DecisionRecord,
 	AppConfigModel,
 	DispatcherConfig,
 	SubmissionConfig,
@@ -23,6 +34,8 @@ from .models import (
 	ArrInstanceModel,
 )
 from .arr_client import check_arr_instance
+from .qb_client import QbittorrentNodeClient
+from .metrics import update_arr_metrics
 import yaml
 import asyncio
 
@@ -51,8 +64,21 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 	dispatcher = Dispatcher(config_obj)
 	app = FastAPI(title="Space-Aware qBittorrent Dispatcher")
 
+	async def require_admin(request: Request) -> None:
+		"""Optional admin API key check for management endpoints.
+
+		If dispatcher.admin_api_key is set, require header X-API-Key to match it.
+		"""
+
+		key = getattr(config_obj.dispatcher, "admin_api_key", None)
+		if not key:
+			return
+		req_key = request.headers.get("x-api-key")
+		if req_key != key:
+			raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key")
+
 	@app.post("/submit", response_model=SubmitDecision)
-	async def submit(req: SubmitRequest) -> SubmitDecision:  # noqa: D401
+	async def submit(req: SubmitRequest, _: None = Depends(require_admin)) -> SubmitDecision:  # noqa: D401
 		"""Submit a new download and have the dispatcher pick the best node."""
 
 		decision = await dispatcher.submit(req)
@@ -66,7 +92,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		return decision
 
 	@app.get("/config/raw", response_class=PlainTextResponse)
-	async def get_config_raw() -> str:
+	async def get_config_raw(_: None = Depends(require_admin)) -> str:
 		"""Return the current YAML configuration file."""
 
 		try:
@@ -75,7 +101,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			raise HTTPException(status_code=404, detail="config.yaml not found") from exc
 
 	@app.post("/config/raw")
-	async def update_config_raw(payload: ConfigRaw) -> dict[str, str]:
+	async def update_config_raw(payload: ConfigRaw, _: None = Depends(require_admin)) -> dict[str, str]:
 		"""Validate and persist new YAML config, then hot-reload dispatcher."""
 
 		try:
@@ -96,7 +122,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		return {"status": "ok"}
 
 	@app.get("/config/json", response_model=AppConfigModel)
-	async def get_config_json() -> AppConfigModel:
+	async def get_config_json(_: None = Depends(require_admin)) -> AppConfigModel:
 		"""Return the current configuration as structured JSON."""
 
 		disp = config_obj.dispatcher
@@ -137,7 +163,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		return AppConfigModel(dispatcher=dispatcher_cfg, nodes=nodes_cfg, arr_instances=arr_cfg)
 
 	@app.post("/config/json", response_model=AppConfigModel)
-	async def update_config_json(payload: AppConfigModel) -> AppConfigModel:
+	async def update_config_json(payload: AppConfigModel, _: None = Depends(require_admin)) -> AppConfigModel:
 		"""Validate and persist structured JSON config, then hot-reload dispatcher."""
 
 		raw = payload.model_dump()
@@ -214,6 +240,10 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/config\" style=\"color:#9ca3af; text-decoration:none;\">Config</a>
 				<span style=\"color:#4b5563;\">·</span>
+				<a href=\"/decisions\" style=\"color:#9ca3af; text-decoration:none;\">Decisions</a>
+				<span style=\"color:#4b5563;\">·</span>
+				<a href=\"/metrics\" style=\"color:#9ca3af; text-decoration:none;\">Metrics</a>
+				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/nodes\" style=\"color:#9ca3af; text-decoration:none;\">/nodes</a>
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/arr\" style=\"color:#9ca3af; text-decoration:none;\">/arr</a>
@@ -273,6 +303,24 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<ul id=\"arr-list\" class=\"small\" style=\"margin-top:0.35rem; padding-left:1rem; margin-bottom:0;\"></ul>
 			</section>
 		</div>
+		<section class="card" style="margin-top:1.5rem;">
+			<h2>Recent decisions</h2>
+			<div class="muted small">Most recent routing outcomes (newest last).</div>
+			<table>
+				<thead>
+					<tr>
+						<th>Time</th>
+						<th>Request</th>
+						<th>Category</th>
+						<th>Size (GiB)</th>
+						<th>Status</th>
+						<th>Selected node</th>
+					</tr>
+				</thead>
+				<tbody id="decisions-body"></tbody>
+			</table>
+			<div class="muted small" style="margin-top:0.5rem;">Shows up to the 50 most recent submissions.</div>
+		</section>
 	</main>
 
 	<script>
@@ -400,17 +448,47 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			}
 		}
 
+		async function fetchDecisions() {
+			const body = document.getElementById('decisions-body');
+			if (!body) return;
+			try {
+				const res = await fetch('/decisions?limit=50');
+				if (!res.ok) throw new Error('HTTP ' + res.status);
+				const data = await res.json();
+				body.innerHTML = '';
+				for (const rec of data) {
+					const tr = document.createElement('tr');
+					const d = new Date(rec.timestamp * 1000);
+					const timeStr = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+					const size = (rec.size_estimate_gb ?? 0).toFixed ? rec.size_estimate_gb.toFixed(1) : rec.size_estimate_gb;
+					tr.innerHTML = `
+						<td class="small">${timeStr}</td>
+						<td class="small monospace">${rec.request_name}</td>
+						<td class="small">${rec.request_category}</td>
+						<td class="small">${size}</td>
+						<td class="small">${rec.status}</td>
+						<td class="small monospace">${rec.selected_node || '—'}</td>
+					`;
+					body.appendChild(tr);
+				}
+			} catch (err) {
+				console.error(err);
+			}
+		}
+
 		document.getElementById('debug-form').addEventListener('submit', runDecision);
 		fetchNodes();
-			fetchArr();
-			setInterval(fetchNodes, 5000);
-			setInterval(fetchArr, 10000);
+		fetchArr();
+		fetchDecisions();
+		setInterval(fetchNodes, 5000);
+		setInterval(fetchArr, 10000);
+		setInterval(fetchDecisions, 15000);
 	</script>
 </body>
 </html>"""
 
 	@app.get("/nodes", response_model=list[NodeStatus])
-	async def list_nodes() -> list[NodeStatus]:
+	async def list_nodes(_: None = Depends(require_admin)) -> list[NodeStatus]:
 		"""Return current node metrics, scores, and exclusion flags."""
 
 		return await dispatcher.get_node_statuses()
@@ -419,9 +497,9 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 
 	@app.post("/api/v2/auth/login", response_class=PlainTextResponse)
 	async def qb_login(
+		response: Response,
 		username: str = Form(""),  # noqa: ARG001
 		password: str = Form(""),  # noqa: ARG001
-		response: Response = None,
 	) -> str:
 		"""Fake qBittorrent login; accepts any credentials.
 
@@ -430,8 +508,6 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		return "Ok." and a dummy SID cookie.
 		"""
 
-		if response is None:
-			response = Response()
 		response.set_cookie("SID", "dispatcher", httponly=True, path="/")
 		return "Ok."
 
@@ -473,7 +549,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		return "Ok."
 
 	@app.post("/debug/decision", response_model=DecisionDebug)
-	async def debug_decision(req: SubmitRequest) -> DecisionDebug:
+	async def debug_decision(req: SubmitRequest, _: None = Depends(require_admin)) -> DecisionDebug:
 		"""Dry-run a decision: score nodes but do not submit the torrent."""
 
 		return await dispatcher.debug_decision(req)
@@ -495,7 +571,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		return {"status": "ok"}
 
 	@app.get("/arr", response_model=list[ArrStatus])
-	async def arr_status() -> list[ArrStatus]:
+	async def arr_status(_: None = Depends(require_admin)) -> list[ArrStatus]:
 		"""Return connectivity status for configured Sonarr/Radarr instances."""
 
 		instances = getattr(config_obj, "arr_instances", []) or []
@@ -505,6 +581,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		results = await asyncio.gather(*(check_arr_instance(inst) for inst in instances))
 		out: list[ArrStatus] = []
 		for inst, state in zip(instances, results, strict=False):
+			update_arr_metrics(inst.name, inst.type, state.reachable)
 			out.append(
 				ArrStatus(
 					name=inst.name,
@@ -517,8 +594,94 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			)
 		return out
 
+	@app.get("/metrics")
+	async def metrics_endpoint() -> Response:
+		"""Expose Prometheus metrics for scraping."""
+
+		data = generate_latest()
+		return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+	@app.get("/decisions", response_model=list[DecisionRecord])
+	async def list_decisions(limit: int = 50, _: None = Depends(require_admin)) -> list[DecisionRecord]:
+		"""Return recent routing decisions from the in-memory history buffer."""
+
+		try:
+			limit = int(limit)
+		except Exception:  # noqa: BLE001
+			limit = 50
+		return dispatcher.get_decisions(limit=limit)
+
+		@app.post("/config/test/node", response_model=NodeStatus)
+		async def test_node_connection(node: NodeConfigModel, _: None = Depends(require_admin)) -> NodeStatus:
+			"""Test connectivity to a qBittorrent node using the provided settings.
+
+			This does not persist any configuration; it simply attempts to reach the
+			WebUI and returns basic metrics or an error string.
+			"""
+
+			config_dc = NodeConfigDC(
+				name=node.name,
+				url=node.url,
+				username=node.username,
+				password=node.password,
+				min_free_gb=node.min_free_gb,
+				weight=1.0,
+			)
+
+			client = QbittorrentNodeClient(config_dc)
+			try:
+				state = await to_thread.run_sync(client.fetch_state)
+				metrics = NodeMetrics(
+					name=config_dc.name,
+					free_disk_gb=state.free_disk_gb,
+					active_downloads=state.active_downloads,
+					paused_downloads=state.paused_downloads,
+					global_download_rate_mbps=state.global_download_rate_mbps,
+					reachable=True,
+					excluded_reason=None,
+					score=None,
+				)
+				return NodeStatus(metrics=metrics, excluded=False)
+			except Exception as exc:  # noqa: BLE001
+				metrics = NodeMetrics(
+					name=config_dc.name,
+					free_disk_gb=None,
+					active_downloads=0,
+					paused_downloads=0,
+					global_download_rate_mbps=0.0,
+					reachable=False,
+					excluded_reason=str(exc),
+					score=None,
+				)
+				return NodeStatus(metrics=metrics, excluded=True)
+
+		@app.post("/config/test/arr", response_model=ArrStatus)
+		async def test_arr_connection(inst: ArrInstanceModel, _: None = Depends(require_admin)) -> ArrStatus:
+			"""Test connectivity to a Sonarr/Radarr instance using the provided settings.
+
+			This does not persist any configuration; it simply calls /system/status
+			and reports reachability and version.
+			"""
+
+			config_dc = ArrInstanceConfig(
+				name=inst.name,
+				type=inst.type,
+				url=inst.url,
+				api_key=inst.api_key,
+			)
+
+			state = await check_arr_instance(config_dc)
+			return ArrStatus(
+				name=config_dc.name,
+				type=config_dc.type,
+				url=config_dc.url,
+				reachable=state.reachable,
+				version=state.version,
+				error=state.error,
+			)
+
 	@app.get("/config", response_class=HTMLResponse)
-	async def config_ui() -> str:
+	async def config_ui(_: None = Depends(require_admin)) -> str:
 		"""Form-based configurator for dispatcher, nodes, and *arr instances."""
 
 		return """<!DOCTYPE html>
@@ -564,6 +727,10 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<a href=\"/\" style=\"color:#9ca3af; text-decoration:none;\">Dashboard</a>
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/config\" style=\"color:#9ca3af; text-decoration:none;\">Config</a>
+				<span style=\"color:#4b5563;\">·</span>
+				<a href=\"/decisions\" style=\"color:#9ca3af; text-decoration:none;\">Decisions</a>
+				<span style=\"color:#4b5563;\">·</span>
+				<a href=\"/metrics\" style=\"color:#9ca3af; text-decoration:none;\">Metrics</a>
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/nodes\" style=\"color:#9ca3af; text-decoration:none;\">/nodes</a>
 				<span style=\"color:#4b5563;\">·</span>
@@ -667,10 +834,68 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<div>
 					<label class="muted">Min free (GiB)</label>
 					<input class="node-minfree" type="number" step="1" min="0" value="${node?.min_free_gb ?? 0}">
-					<button type="button" class="danger" style="margin-top:0.3rem; padding-inline:0.6rem; font-size:0.7rem;">Remove</button>
+					<div style="display:flex; gap:0.3rem; margin-top:0.3rem;">
+						<button type="button" class="secondary node-test" style="padding-inline:0.6rem; font-size:0.7rem;">Test</button>
+						<button type="button" class="danger node-remove" style="padding-inline:0.6rem; font-size:0.7rem;">Remove</button>
+					</div>
+					<div class="muted node-test-status" style="margin-top:0.2rem; font-size:0.72rem;"></div>
 				</div>
 			`;
-			row.querySelector('.danger').addEventListener('click', () => row.remove());
+			const removeBtn = row.querySelector('.node-remove');
+			removeBtn.addEventListener('click', () => row.remove());
+			const testBtn = row.querySelector('.node-test');
+			const testStatus = row.querySelector('.node-test-status');
+			testBtn.addEventListener('click', async () => {
+				const nameInput = row.querySelector('.node-name');
+				const urlInput = row.querySelector('.node-url');
+				const usernameInput = row.querySelector('.node-username');
+				const passwordInput = row.querySelector('.node-password');
+				const minfreeInput = row.querySelector('.node-minfree');
+
+				const name = nameInput.value.trim();
+				const url = urlInput.value.trim();
+				if (!name || !url) {
+					testStatus.textContent = 'Name and URL are required to test.';
+					return;
+				}
+
+				const minFreeVal = parseFloat(minfreeInput.value || '0');
+				const min_free_gb = Number.isNaN(minFreeVal) ? 0 : minFreeVal;
+				const payload = {
+					name,
+					url,
+					username: usernameInput.value.trim(),
+					password: passwordInput.value,
+					min_free_gb,
+				};
+
+				testBtn.disabled = true;
+				testStatus.textContent = 'Testing connection...';
+				try {
+					const res = await fetch('/config/test/node', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(payload),
+					});
+					if (!res.ok) {
+						testStatus.textContent = 'Error: ' + res.status + ' ' + (await res.text());
+					} else {
+						const data = await res.json();
+						if (data.metrics.reachable) {
+							const free = data.metrics.free_disk_gb != null ? data.metrics.free_disk_gb.toFixed(1) : 'n/a';
+							const active = data.metrics.active_downloads;
+							testStatus.textContent = `OK: free ${free} GiB, active ${active}`;
+						} else {
+							testStatus.textContent = 'Unreachable: ' + (data.metrics.excluded_reason || 'see logs');
+						}
+					}
+				} catch (err) {
+					console.error(err);
+					testStatus.textContent = 'Request failed: ' + err;
+				} finally {
+					testBtn.disabled = false;
+				}
+			});
 			return row;
 		}
 
@@ -696,10 +921,59 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<div>
 					<label class="muted">API key</label>
 					<input class="arr-key" type="password" value="${inst?.api_key || ''}">
-					<button type="button" class="danger" style="margin-top:0.3rem; padding-inline:0.6rem; font-size:0.7rem;">Remove</button>
+					<div style="display:flex; gap:0.3rem; margin-top:0.3rem;">
+						<button type="button" class="secondary arr-test" style="padding-inline:0.6rem; font-size:0.7rem;">Test</button>
+						<button type="button" class="danger arr-remove" style="padding-inline:0.6rem; font-size:0.7rem;">Remove</button>
+					</div>
+					<div class="muted arr-test-status" style="margin-top:0.2rem; font-size:0.72rem;"></div>
 				</div>
 			`;
-			row.querySelector('.danger').addEventListener('click', () => row.remove());
+			const removeBtn = row.querySelector('.arr-remove');
+			removeBtn.addEventListener('click', () => row.remove());
+			const testBtn = row.querySelector('.arr-test');
+			const testStatus = row.querySelector('.arr-test-status');
+			testBtn.addEventListener('click', async () => {
+				const nameInput = row.querySelector('.arr-name');
+				const urlInput = row.querySelector('.arr-url');
+				const keyInput = row.querySelector('.arr-key');
+				const typeSelect = row.querySelector('.arr-type');
+
+				const name = nameInput.value.trim();
+				const url = urlInput.value.trim();
+				const api_key = keyInput.value;
+				const type = typeSelect.value || 'sonarr';
+				if (!name || !url || !api_key) {
+					testStatus.textContent = 'Name, URL, and API key are required to test.';
+					return;
+				}
+
+				const payload = { name, type, url, api_key };
+				testBtn.disabled = true;
+				testStatus.textContent = 'Testing connection...';
+				try {
+					const res = await fetch('/config/test/arr', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(payload),
+					});
+					if (!res.ok) {
+						testStatus.textContent = 'Error: ' + res.status + ' ' + (await res.text());
+					} else {
+						const data = await res.json();
+						if (data.reachable) {
+							const ver = data.version ? 'v' + data.version : '';
+							testStatus.textContent = 'OK: reachable ' + ver;
+						} else {
+							testStatus.textContent = 'Unreachable: ' + (data.error || 'see logs');
+						}
+					}
+				} catch (err) {
+					console.error(err);
+					testStatus.textContent = 'Request failed: ' + err;
+				} finally {
+					testBtn.disabled = false;
+				}
+			});
 			return row;
 		}
 

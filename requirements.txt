@@ -5,3 +5,4 @@ qbittorrent-api==2024.3.60
 anyio==4.4.0
 python-multipart==0.0.9
 httpx==0.27.2
+prometheus-client==0.21.0

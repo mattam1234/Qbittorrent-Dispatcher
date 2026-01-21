@@ -44,14 +44,14 @@ class QbittorrentNodeClient:
 			maindata = self._client.sync_maindata()
 			transfer_info = self._client.transfer_info()
 			torrents_downloading = self._client.torrents_info(status_filter="downloading")
-			torrents_paused = self._client.torrents_info(status_filter="paused_downloading")
+			torrents_paused = self._client.torrents_info(status_filter="paused")
 		except Exception:
 			logger.exception("Failed to fetch state from node", extra={"node": self.config.name})
 			raise
 
 		server_state = maindata.get("server_state", {}) if isinstance(maindata, dict) else {}
 
-		free_bytes = server_state.get("free_space_on_disk")
+		free_bytes = server_state.get("free_space_on_disk") if isinstance(server_state, dict) else None
 		free_disk_gb: Optional[float]
 		if isinstance(free_bytes, (int, float)):
 			free_disk_gb = float(free_bytes) / (1024 ** 3)
@@ -59,7 +59,10 @@ class QbittorrentNodeClient:
 			free_disk_gb = None
 
 		dl_speed_bytes = transfer_info.get("dl_info_speed", 0) if isinstance(transfer_info, dict) else 0
-		global_download_rate_mbps = float(dl_speed_bytes) * 8.0 / 1_000_000.0
+		if isinstance(dl_speed_bytes, (int, float)):
+			global_download_rate_mbps = float(dl_speed_bytes) * 8.0 / 1_000_000.0
+		else:
+			global_download_rate_mbps = 0.0
 
 		return NodeState(
 			free_disk_gb=free_disk_gb,
