@@ -697,26 +697,32 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		# Check Overseerr
 		if config_obj.integrations.overseerr.enabled:
 			client = OverseerrClient(config_obj.integrations.overseerr)
-			connected, version = await client.check_status()
+			connected, result = await client.check_status()
 			status["overseerr"]["connected"] = connected
-			status["overseerr"]["version"] = version if connected else None
-			status["overseerr"]["error"] = version if not connected else None
+			if connected:
+				status["overseerr"]["version"] = result
+			else:
+				status["overseerr"]["error"] = result
 		
 		# Check Jellyseerr
 		if config_obj.integrations.jellyseerr.enabled:
 			client = JellyseerrClient(config_obj.integrations.jellyseerr)
-			connected, version = await client.check_status()
+			connected, result = await client.check_status()
 			status["jellyseerr"]["connected"] = connected
-			status["jellyseerr"]["version"] = version if connected else None
-			status["jellyseerr"]["error"] = version if not connected else None
+			if connected:
+				status["jellyseerr"]["version"] = result
+			else:
+				status["jellyseerr"]["error"] = result
 		
 		# Check Prowlarr
 		if config_obj.integrations.prowlarr.enabled:
 			client = ProwlarrClient(config_obj.integrations.prowlarr)
-			connected, version = await client.check_status()
+			connected, result = await client.check_status()
 			status["prowlarr"]["connected"] = connected
-			status["prowlarr"]["version"] = version if connected else None
-			status["prowlarr"]["error"] = version if not connected else None
+			if connected:
+				status["prowlarr"]["version"] = result
+			else:
+				status["prowlarr"]["error"] = result
 		
 		# List messaging services
 		for svc in config_obj.integrations.messaging_services:

@@ -37,10 +37,13 @@ class N8nClient:
 			logger.debug("n8n integration not enabled or webhook URL not configured")
 			return False
 
+		# Add timestamp to payload
+		from datetime import datetime
+		
 		# Prepare webhook payload
 		webhook_payload = {
 			"event": event_type,
-			"timestamp": payload.get("timestamp", ""),
+			"timestamp": datetime.now().isoformat(),
 			"data": payload,
 		}
 

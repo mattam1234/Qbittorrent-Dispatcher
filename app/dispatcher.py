@@ -339,17 +339,13 @@ class Dispatcher:
 				inc_submission(decision.status)
 				self._record_decision(req, decision)
 				
-				# Track the request if enabled
+				# Track the request if enabled (before submission to ensure it's tracked even on failure)
+				request_id = None
 				if self.request_tracker:
-					self.request_tracker.add_request(
+					request_id = self.request_tracker.add_request(
 						req,
 						source=req.category,
 						selected_node=node.config.name,
-					)
-					self.request_tracker.update_status(
-						self.request_tracker._generate_request_id(req.magnet),
-						"downloading",
-						node.config.name,
 					)
 				
 				# Send success notification
@@ -365,6 +361,14 @@ class Dispatcher:
 				await self.n8n_client.notify_download_started(
 					req.name, req.category, req.size_estimate_gb, node.config.name
 				)
+				
+				# Update request status to downloading
+				if self.request_tracker and request_id:
+					self.request_tracker.update_status(
+						request_id,
+						"downloading",
+						node.config.name,
+					)
 				
 				return decision
 			except Exception as exc:  # noqa: BLE001

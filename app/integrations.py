@@ -25,15 +25,6 @@ class MediaRequest:
 	tmdb_id: Optional[int] = None
 
 
-@dataclass
-class QualityProfile:
-	"""Represents a quality profile from ARR services."""
-	id: int
-	name: str
-	cutoff: int
-	items: List[Dict[str, Any]]
-
-
 class OverseerrClient:
 	"""Client for interacting with Overseerr API."""
 
@@ -59,6 +50,15 @@ class OverseerrClient:
 
 				requests = []
 				for item in data.get("results", []):
+					year = None
+					if item["media"].get("releaseDate"):
+						try:
+							year_str = str(item["media"]["releaseDate"])[:4]
+							if year_str.isdigit() and len(year_str) == 4:
+								year = int(year_str)
+						except (ValueError, IndexError):
+							pass
+					
 					requests.append(
 						MediaRequest(
 							id=item["id"],
@@ -67,7 +67,7 @@ class OverseerrClient:
 							status=item["status"],
 							requested_by=item.get("requestedBy", {}).get("displayName", "Unknown"),
 							title=item["media"].get("title", "Unknown"),
-							year=item["media"].get("releaseDate", "")[:4] if item["media"].get("releaseDate") else None,
+							year=year,
 							tvdb_id=item["media"].get("externalIds", {}).get("tvdbId"),
 							tmdb_id=item["media"].get("tmdbId"),
 						)
@@ -121,6 +121,15 @@ class JellyseerrClient:
 
 				requests = []
 				for item in data.get("results", []):
+					year = None
+					if item["media"].get("releaseDate"):
+						try:
+							year_str = str(item["media"]["releaseDate"])[:4]
+							if year_str.isdigit() and len(year_str) == 4:
+								year = int(year_str)
+						except (ValueError, IndexError):
+							pass
+					
 					requests.append(
 						MediaRequest(
 							id=item["id"],
@@ -129,7 +138,7 @@ class JellyseerrClient:
 							status=item["status"],
 							requested_by=item.get("requestedBy", {}).get("displayName", "Unknown"),
 							title=item["media"].get("title", "Unknown"),
-							year=item["media"].get("releaseDate", "")[:4] if item["media"].get("releaseDate") else None,
+							year=year,
 							tvdb_id=item["media"].get("externalIds", {}).get("tvdbId"),
 							tmdb_id=item["media"].get("tmdbId"),
 						)
