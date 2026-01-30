@@ -46,10 +46,67 @@ class ArrInstanceConfig:
 
 
 @dataclass
+class MessagingServiceConfig:
+	name: str
+	type: str  # discord, slack, telegram, etc.
+	webhook_url: Optional[str] = None
+	bot_token: Optional[str] = None
+	chat_id: Optional[str] = None
+	enabled: bool = True
+
+
+@dataclass
+class N8nConfig:
+	enabled: bool = False
+	webhook_url: Optional[str] = None
+	api_key: Optional[str] = None
+
+
+@dataclass
+class OverseerrConfig:
+	enabled: bool = False
+	url: str = ""
+	api_key: str = ""
+
+
+@dataclass
+class JellyseerrConfig:
+	enabled: bool = False
+	url: str = ""
+	api_key: str = ""
+
+
+@dataclass
+class ProwlarrConfig:
+	enabled: bool = False
+	url: str = ""
+	api_key: str = ""
+
+
+@dataclass
+class IntegrationsConfig:
+	n8n: N8nConfig = field(default_factory=N8nConfig)
+	messaging_services: List[MessagingServiceConfig] = field(default_factory=list)
+	overseerr: OverseerrConfig = field(default_factory=OverseerrConfig)
+	jellyseerr: JellyseerrConfig = field(default_factory=JellyseerrConfig)
+	prowlarr: ProwlarrConfig = field(default_factory=ProwlarrConfig)
+
+
+@dataclass
+class RequestTrackingConfig:
+	enabled: bool = True
+	check_duplicates: bool = True
+	check_quality_profiles: bool = True
+	send_suggestions: bool = True
+
+
+@dataclass
 class AppConfig:
 	dispatcher: DispatcherSettings
 	nodes: List[NodeConfig]
 	arr_instances: List[ArrInstanceConfig] = field(default_factory=list)
+	integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
+	request_tracking: RequestTrackingConfig = field(default_factory=RequestTrackingConfig)
 
 
 def parse_config(raw: dict) -> AppConfig:
@@ -97,10 +154,83 @@ def parse_config(raw: dict) -> AppConfig:
 			),
 		)
 
+	# Parse integrations config
+	integrations_raw = raw.get("integrations", {}) or {}
+	
+	# Parse N8n config
+	n8n_raw = integrations_raw.get("n8n", {}) or {}
+	n8n = N8nConfig(
+		enabled=bool(n8n_raw.get("enabled", False)),
+		webhook_url=n8n_raw.get("webhook_url"),
+		api_key=n8n_raw.get("api_key"),
+	)
+	
+	# Parse messaging services
+	messaging_raw = integrations_raw.get("messaging_services", []) or []
+	messaging_services: List[MessagingServiceConfig] = []
+	for svc in messaging_raw:
+		messaging_services.append(
+			MessagingServiceConfig(
+				name=str(svc["name"]),
+				type=str(svc["type"]),
+				webhook_url=svc.get("webhook_url"),
+				bot_token=svc.get("bot_token"),
+				chat_id=svc.get("chat_id"),
+				enabled=bool(svc.get("enabled", True)),
+			),
+		)
+	
+	# Parse Overseerr config
+	overseerr_raw = integrations_raw.get("overseerr", {}) or {}
+	overseerr = OverseerrConfig(
+		enabled=bool(overseerr_raw.get("enabled", False)),
+		url=overseerr_raw.get("url", ""),
+		api_key=overseerr_raw.get("api_key", ""),
+	)
+	
+	# Parse Jellyseerr config
+	jellyseerr_raw = integrations_raw.get("jellyseerr", {}) or {}
+	jellyseerr = JellyseerrConfig(
+		enabled=bool(jellyseerr_raw.get("enabled", False)),
+		url=jellyseerr_raw.get("url", ""),
+		api_key=jellyseerr_raw.get("api_key", ""),
+	)
+	
+	# Parse Prowlarr config
+	prowlarr_raw = integrations_raw.get("prowlarr", {}) or {}
+	prowlarr = ProwlarrConfig(
+		enabled=bool(prowlarr_raw.get("enabled", False)),
+		url=prowlarr_raw.get("url", ""),
+		api_key=prowlarr_raw.get("api_key", ""),
+	)
+	
+	integrations = IntegrationsConfig(
+		n8n=n8n,
+		messaging_services=messaging_services,
+		overseerr=overseerr,
+		jellyseerr=jellyseerr,
+		prowlarr=prowlarr,
+	)
+	
+	# Parse request tracking config
+	tracking_raw = raw.get("request_tracking", {}) or {}
+	request_tracking = RequestTrackingConfig(
+		enabled=bool(tracking_raw.get("enabled", True)),
+		check_duplicates=bool(tracking_raw.get("check_duplicates", True)),
+		check_quality_profiles=bool(tracking_raw.get("check_quality_profiles", True)),
+		send_suggestions=bool(tracking_raw.get("send_suggestions", True)),
+	)
+
 	if not nodes:
 		raise ValueError("No nodes configured in config")
 
-	return AppConfig(dispatcher=dispatcher, nodes=nodes, arr_instances=arr_instances)
+	return AppConfig(
+		dispatcher=dispatcher, 
+		nodes=nodes, 
+		arr_instances=arr_instances,
+		integrations=integrations,
+		request_tracking=request_tracking,
+	)
 
 
 def load_config(path: Path | str) -> AppConfig:

@@ -20,6 +20,10 @@ from .models import (
 	DecisionRecord,
 )
 from .qb_client import QbittorrentNodeClient, NodeState
+from .request_tracker import RequestTracker
+from .messaging import MessagingService
+from .quality_checker import QualityProfileChecker
+from .n8n_client import N8nClient
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,12 @@ class Dispatcher:
 		self.config = config
 		self._clients = {n.name: QbittorrentNodeClient(n) for n in config.nodes}
 		self._history: Deque[DecisionRecord] = deque(maxlen=200)
+		
+		# Initialize new services
+		self.request_tracker = RequestTracker() if config.request_tracking.enabled else None
+		self.messaging = MessagingService(config.integrations.messaging_services)
+		self.quality_checker = QualityProfileChecker(config.arr_instances)
+		self.n8n_client = N8nClient(config.integrations.n8n)
 
 	async def _gather_node_state(self, node: NodeConfig) -> Tuple[NodeConfig, Optional[NodeState], NodeMetrics]:
 		client = self._clients[node.name]
@@ -202,6 +212,68 @@ class Dispatcher:
 		return DecisionDebug(selected_node=selected, reason=reason, nodes=statuses)
 
 	async def submit(self, req: SubmitRequest) -> SubmitDecision:
+		# Check for duplicates if enabled
+		if self.request_tracker and self.config.request_tracking.check_duplicates:
+			is_duplicate, existing = self.request_tracker.is_duplicate(req)
+			if is_duplicate and existing:
+				logger.info(
+					"Duplicate request detected",
+					extra={"name": req.name, "existing": existing.name},
+				)
+				
+				# Notify about duplicate
+				await self.messaging.send_notification(
+					f"Duplicate download detected: {req.name}\nAlready downloading: {existing.name}",
+					title="Duplicate Download",
+					level="warning",
+				)
+				
+				await self.n8n_client.notify_duplicate_detected(
+					req.name, req.category, existing.name
+				)
+				
+				decision = SubmitDecision(
+					selected_node=existing.selected_node,
+					reason=f"duplicate_of_existing_request: {existing.name}",
+					status="rejected",
+					attempted_nodes=[],
+				)
+				inc_submission(decision.status)
+				self._record_decision(req, decision)
+				return decision
+		
+		# Check quality profiles if enabled
+		if self.config.request_tracking.check_quality_profiles:
+			quality_suggestion = await self.quality_checker.check_quality_match(
+				req.name, req.category, req.size_estimate_gb
+			)
+			if quality_suggestion and self.config.request_tracking.send_suggestions:
+				logger.info(
+					"Quality suggestion available",
+					extra={
+						"name": req.name,
+						"current": quality_suggestion.current_quality,
+						"suggested": quality_suggestion.suggested_quality,
+					},
+				)
+				
+				# Send suggestion notification
+				await self.messaging.send_notification(
+					f"Better quality available for: {req.name}\n"
+					f"Current: {quality_suggestion.current_quality}\n"
+					f"Suggested: {quality_suggestion.suggested_quality}\n"
+					f"Reason: {quality_suggestion.reason}",
+					title="Quality Upgrade Suggestion",
+					level="info",
+				)
+				
+				await self.n8n_client.notify_quality_suggestion(
+					req.name,
+					quality_suggestion.current_quality,
+					quality_suggestion.suggested_quality,
+					quality_suggestion.reason,
+				)
+		
 		scored_nodes = await self.evaluate_nodes(size_estimate_gb=req.size_estimate_gb)
 
 		eligible = [n for n in scored_nodes if not n.excluded and n.score is not None]
@@ -219,6 +291,14 @@ class Dispatcher:
 			)
 			inc_submission(decision.status)
 			self._record_decision(req, decision)
+			
+			# Notify about rejection
+			await self.messaging.send_notification(
+				f"Download rejected - no eligible nodes: {req.name}",
+				title="Download Rejected",
+				level="error",
+			)
+			
 			return decision
 
 		max_retries = max(1, self.config.dispatcher.submission.max_retries)
@@ -258,6 +338,34 @@ class Dispatcher:
 				)
 				inc_submission(decision.status)
 				self._record_decision(req, decision)
+				
+				# Track the request if enabled
+				if self.request_tracker:
+					self.request_tracker.add_request(
+						req,
+						source=req.category,
+						selected_node=node.config.name,
+					)
+					self.request_tracker.update_status(
+						self.request_tracker._generate_request_id(req.magnet),
+						"downloading",
+						node.config.name,
+					)
+				
+				# Send success notification
+				await self.messaging.send_notification(
+					f"Download started on {node.config.name}: {req.name}\n"
+					f"Category: {req.category}\n"
+					f"Size: {req.size_estimate_gb:.2f} GB",
+					title="Download Started",
+					level="success",
+				)
+				
+				# Notify n8n
+				await self.n8n_client.notify_download_started(
+					req.name, req.category, req.size_estimate_gb, node.config.name
+				)
+				
 				return decision
 			except Exception as exc:  # noqa: BLE001
 				last_error = str(exc)
