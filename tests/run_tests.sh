@@ -9,7 +9,7 @@ SERVER_PID=$!
 sleep 5
 
 # Run the tests
-python3 test_integrations.py
+python3 tests/test_integrations.py
 TEST_EXIT=$?
 
 # Cleanup: kill the server

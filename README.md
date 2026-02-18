@@ -116,6 +116,16 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Testing
+
+Run the integration test suite to verify all features are working:
+
+```bash
+./tests/run_tests.sh
+```
+
+See [tests/README.md](tests/README.md) for more details on the test suite.
+
 ## Docker
 
 ```bash
