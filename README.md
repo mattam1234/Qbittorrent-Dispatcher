@@ -117,9 +117,37 @@ The dispatcher acts as a smart proxy between your *arr applications (Sonarr/Rada
 
 ### Running Locally
 
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Docker
+
+```bash
+docker build -t qb-dispatcher .
+docker run --rm -p 8000:8000 -v ${PWD}/config.yaml:/app/config.yaml qb-dispatcher
+```
+
+### Docker Compose
+
+For easier local development, you can use the provided [docker-compose.yml](docker-compose.yml):
+
+```bash
+docker compose up -d
+```
+
+This will:
+
+- Run the dispatcher as `qb-dispatcher` (by default exposed on host port 8001 → container 8000)
+- Mount `config.yaml` into the container at `/app/config.yaml` (read/write, for the web configurator)
+- Attach it to a `qbnet` bridge network (for co-locating qBittorrent/Sonarr/Radarr containers)
+
+## Configuration
+
 Edit [config.yaml](config.yaml) to define dispatcher weights, security, qBittorrent nodes, and optional *arr instances.
 
-Top-level structure:
+### Configuration File Structure
 
 ```yaml
 dispatcher:
@@ -204,37 +232,22 @@ request_tracking:
   send_suggestions: true  # Send suggestions for quality upgrades
 ```
 
+### Key Configuration Options
+
+**Dispatcher Weights:**
+- `disk_weight`: How much to prioritize nodes with more free disk space (default: 1.0)
+- `download_weight`: How much to prioritize nodes with fewer active downloads (default: 2.0)
+- `bandwidth_weight`: How much to consider current bandwidth usage (default: 0.1)
+- `max_downloads`: Maximum number of active downloads allowed per node
+- `min_score`: Minimum acceptable score for a node to be eligible
+
+**Node Settings:**
+- `url`: qBittorrent Web UI URL
+- `username`/`password`: qBittorrent credentials
+- `min_free_gb`: Minimum free disk space required (in GB)
+- `weight`: Optional multiplier for this node's score (default: 1.0)
+
 The dispatcher will connect to each qBittorrent `url` using the WebUI API and use `min_free_gb`, active downloads, bandwidth, and optional node `weight` to score and select nodes.
-
-### Running Locally
-
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### Docker
-
-```bash
-docker build -t qb-dispatcher .
-docker run --rm -p 8000:8000 -v ${PWD}/config.yaml:/app/config.yaml qb-dispatcher
-```
-
-### Docker Compose
-
-For easier local development, you can use the provided [docker-compose.yml](docker-compose.yml):
-
-```bash
-docker compose up -d
-```
-
-This will:
-
-- Run the dispatcher as `qb-dispatcher` (by default exposed on host port 8001 → container 8000)
-- Mount `config.yaml` into the container at `/app/config.yaml` (read/write, for the web configurator)
-- Attach it to a `qbnet` bridge network (for co-locating qBittorrent/Sonarr/Radarr containers)
-
-## Configuration
 
 ## Sonarr/Radarr integration
 
@@ -325,21 +338,41 @@ GET /decisions
 ```
 Returns the recent download routing decisions (last ~50 submissions).
 
-## Connection checks & test buttons
+## Connection Checks & Testing
 
-- qBittorrent nodes
-	- `GET /nodes` – performs live connection checks to all configured qBittorrent nodes and reports `reachable` plus scores and exclusion reasons.
-	- `/config` UI – each node row has a **Test** button that calls `POST /config/test/node` with the row’s values and shows free space / active downloads or an error.
+### qBittorrent Nodes
 
-- Sonarr/Radarr instances
-	- Configure `arr_instances` as shown in the configuration section above.
-	- `GET /arr` – checks each instance by calling `<url>/system/status` with `X-Api-Key` and returns:
-		- `reachable: true/false`
-		- `version` (if available)
-		- `error` (HTTP status or exception text when unreachable)
-	- `/config` UI – each *arr row has a **Test** button that calls `POST /config/test/arr` and shows reachability and version.
+**API Endpoint:**
+- `GET /nodes` – performs live connection checks to all configured qBittorrent nodes and reports `reachable` status, scores, and exclusion reasons.
 
-## Web UI, decision history, and admin API key
+**Web UI:**
+- Navigate to `/config` in your browser
+- Each node row has a **Test** button
+- Click to test connectivity and view:
+  - Free disk space
+  - Active downloads
+  - Connection status
+  - Any errors
+
+### Sonarr/Radarr Instances
+
+Configure `arr_instances` as shown in the configuration section above.
+
+**API Endpoint:**
+- `GET /arr` – checks each instance by calling `<url>/system/status` with `X-Api-Key` and returns:
+  - `reachable: true/false`
+  - `version` (if available)
+  - `error` (HTTP status or exception text when unreachable)
+
+**Web UI:**
+- Navigate to `/config` in your browser
+- Each *arr row has a **Test** button
+- Click to verify:
+  - Connectivity
+  - Version information
+  - API key validity
+
+## Web UI, Decision History, and Admin API Key
 
 - Dashboard
 	- `GET /` – shows:
