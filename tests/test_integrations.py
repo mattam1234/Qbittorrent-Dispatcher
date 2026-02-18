@@ -4,7 +4,6 @@ Tests new features: n8n integration, messaging, request tracking, quality profil
 """
 import asyncio
 import httpx
-import time
 
 
 async def test_health_endpoint():

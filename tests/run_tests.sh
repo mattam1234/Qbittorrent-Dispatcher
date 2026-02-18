@@ -1,7 +1,11 @@
 #!/bin/bash
 
+# Get the directory where the script is located and navigate to project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 # Start the server in the background
-cd /home/runner/work/Qbittorrent-Dispatcher/Qbittorrent-Dispatcher
 uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/test_server.log 2>&1 &
 SERVER_PID=$!
 
