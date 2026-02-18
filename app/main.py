@@ -289,6 +289,13 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		.small { font-size: 0.78rem; }
 		.stat-row { display: flex; justify-content: space-between; margin-top: 0.25rem; font-size: 0.78rem; }
 		.chip-row { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-top: 0.35rem; }
+		.integration-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; margin-top: 0.75rem; }
+		.integration-item { background: #111827; border-radius: 0.5rem; padding: 0.75rem; border: 1px solid #1f2937; }
+		.integration-item h3 { font-size: 0.85rem; margin: 0 0 0.25rem 0; }
+		.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-top: 0.5rem; }
+		.stat-box { background: #111827; border-radius: 0.5rem; padding: 0.5rem; text-align: center; border: 1px solid #1f2937; }
+		.stat-box .label { font-size: 0.7rem; color: #9ca3af; }
+		.stat-box .value { font-size: 1.1rem; font-weight: 600; margin-top: 0.15rem; }
 	</style>
 </head>
 <body>
@@ -366,6 +373,41 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<ul id=\"arr-list\" class=\"small\" style=\"margin-top:0.35rem; padding-left:1rem; margin-bottom:0;\"></ul>
 			</section>
 		</div>
+		
+		<div class="layout" style="margin-top:1.5rem;">
+			<section class="card">
+				<h2>Integrations Status</h2>
+				<div class="muted">Status of n8n, Overseerr, Jellyseerr, Prowlarr, and messaging services.</div>
+				<div class="integration-grid" id="integrations-grid">
+					<div class="integration-item">
+						<h3>Loading...</h3>
+						<div class="muted small">Checking status...</div>
+					</div>
+				</div>
+				<div class="muted small" style="margin-top:0.75rem;">Auto-refreshes every 15 seconds.</div>
+			</section>
+			
+			<section class="card">
+				<h2>Request Tracking</h2>
+				<div class="muted">Overview of tracked download requests.</div>
+				<div class="stat-grid" id="tracking-stats">
+					<div class="stat-box">
+						<div class="label">Total</div>
+						<div class="value">-</div>
+					</div>
+					<div class="stat-box">
+						<div class="label">Active</div>
+						<div class="value">-</div>
+					</div>
+					<div class="stat-box">
+						<div class="label">Completed</div>
+						<div class="value">-</div>
+					</div>
+				</div>
+				<div class="muted small" style="margin-top:0.75rem;" id="tracking-status">Request tracking not enabled</div>
+			</section>
+		</div>
+		
 		<section class="card" style="margin-top:1.5rem;">
 			<h2>Recent decisions</h2>
 			<div class="muted small">Most recent routing outcomes (newest last).</div>
@@ -539,13 +581,141 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			}
 		}
 
+		async function fetchIntegrations() {
+			const grid = document.getElementById('integrations-grid');
+			if (!grid) return;
+			try {
+				const res = await fetch('/integrations/status');
+				if (!res.ok) throw new Error('HTTP ' + res.status);
+				const data = await res.json();
+				grid.innerHTML = '';
+				
+				// n8n
+				const n8nItem = document.createElement('div');
+				n8nItem.className = 'integration-item';
+				const n8nBadge = data.n8n.enabled ? (data.n8n.connected ? 'badge badge-ok' : 'badge badge-bad') : 'badge badge-warn';
+				const n8nStatus = data.n8n.enabled ? (data.n8n.connected ? 'connected' : 'disconnected') : 'disabled';
+				n8nItem.innerHTML = `
+					<h3>n8n</h3>
+					<span class="${n8nBadge}">${n8nStatus}</span>
+					${data.n8n.error ? `<div class="muted small" style="margin-top:0.25rem;">${data.n8n.error}</div>` : ''}
+				`;
+				grid.appendChild(n8nItem);
+				
+				// Overseerr
+				const overseerrItem = document.createElement('div');
+				overseerrItem.className = 'integration-item';
+				const overseerrBadge = data.overseerr.enabled ? (data.overseerr.connected ? 'badge badge-ok' : 'badge badge-bad') : 'badge badge-warn';
+				const overseerrStatus = data.overseerr.enabled ? (data.overseerr.connected ? 'connected' : 'disconnected') : 'disabled';
+				overseerrItem.innerHTML = `
+					<h3>Overseerr</h3>
+					<span class="${overseerrBadge}">${overseerrStatus}</span>
+					${data.overseerr.version ? `<div class="muted small" style="margin-top:0.25rem;">v${data.overseerr.version}</div>` : ''}
+					${data.overseerr.error ? `<div class="muted small" style="margin-top:0.25rem;">${data.overseerr.error}</div>` : ''}
+				`;
+				grid.appendChild(overseerrItem);
+				
+				// Jellyseerr
+				const jellyseerrItem = document.createElement('div');
+				jellyseerrItem.className = 'integration-item';
+				const jellyseerrBadge = data.jellyseerr.enabled ? (data.jellyseerr.connected ? 'badge badge-ok' : 'badge badge-bad') : 'badge badge-warn';
+				const jellyseerrStatus = data.jellyseerr.enabled ? (data.jellyseerr.connected ? 'connected' : 'disconnected') : 'disabled';
+				jellyseerrItem.innerHTML = `
+					<h3>Jellyseerr</h3>
+					<span class="${jellyseerrBadge}">${jellyseerrStatus}</span>
+					${data.jellyseerr.version ? `<div class="muted small" style="margin-top:0.25rem;">v${data.jellyseerr.version}</div>` : ''}
+					${data.jellyseerr.error ? `<div class="muted small" style="margin-top:0.25rem;">${data.jellyseerr.error}</div>` : ''}
+				`;
+				grid.appendChild(jellyseerrItem);
+				
+				// Prowlarr
+				const prowlarrItem = document.createElement('div');
+				prowlarrItem.className = 'integration-item';
+				const prowlarrBadge = data.prowlarr.enabled ? (data.prowlarr.connected ? 'badge badge-ok' : 'badge badge-bad') : 'badge badge-warn';
+				const prowlarrStatus = data.prowlarr.enabled ? (data.prowlarr.connected ? 'connected' : 'disconnected') : 'disabled';
+				prowlarrItem.innerHTML = `
+					<h3>Prowlarr</h3>
+					<span class="${prowlarrBadge}">${prowlarrStatus}</span>
+					${data.prowlarr.version ? `<div class="muted small" style="margin-top:0.25rem;">v${data.prowlarr.version}</div>` : ''}
+					${data.prowlarr.error ? `<div class="muted small" style="margin-top:0.25rem;">${data.prowlarr.error}</div>` : ''}
+				`;
+				grid.appendChild(prowlarrItem);
+				
+				// Messaging Services
+				if (data.messaging_services && data.messaging_services.length > 0) {
+					for (const svc of data.messaging_services) {
+						const svcItem = document.createElement('div');
+						svcItem.className = 'integration-item';
+						const svcBadge = svc.enabled ? 'badge badge-ok' : 'badge badge-warn';
+						const svcStatus = svc.enabled ? 'enabled' : 'disabled';
+						svcItem.innerHTML = `
+							<h3>${svc.name}</h3>
+							<span class="${svcBadge}">${svcStatus}</span>
+							<div class="muted small" style="margin-top:0.25rem;">${svc.type}</div>
+						`;
+						grid.appendChild(svcItem);
+					}
+				}
+			} catch (err) {
+				console.error(err);
+				grid.innerHTML = '<div class="muted small">Error loading integrations status</div>';
+			}
+		}
+
+		async function fetchRequestTracking() {
+			const statsGrid = document.getElementById('tracking-stats');
+			const statusEl = document.getElementById('tracking-status');
+			if (!statsGrid || !statusEl) return;
+			try {
+				const res = await fetch('/request-tracking/all');
+				if (!res.ok) {
+					if (res.status === 404 || res.status === 400) {
+						const data = await res.json();
+						if (data.error) {
+							statusEl.textContent = data.error;
+							return;
+						}
+					}
+					throw new Error('HTTP ' + res.status);
+				}
+				const data = await res.json();
+				
+				// Count statuses
+				let activeCount = 0;
+				let completedCount = 0;
+				for (const req of data.requests || []) {
+					if (req.status === 'downloading' || req.status === 'pending') {
+						activeCount++;
+					} else if (req.status === 'completed') {
+						completedCount++;
+					}
+				}
+				
+				const statBoxes = statsGrid.querySelectorAll('.stat-box .value');
+				if (statBoxes.length >= 3) {
+					statBoxes[0].textContent = data.count || 0;
+					statBoxes[1].textContent = activeCount;
+					statBoxes[2].textContent = completedCount;
+				}
+				
+				statusEl.textContent = `Tracking ${data.count || 0} requests`;
+			} catch (err) {
+				console.error(err);
+				statusEl.textContent = 'Error loading request tracking';
+			}
+		}
+
 		document.getElementById('debug-form').addEventListener('submit', runDecision);
 		fetchNodes();
 		fetchArr();
 		fetchDecisions();
+		fetchIntegrations();
+		fetchRequestTracking();
 		setInterval(fetchNodes, 5000);
 		setInterval(fetchArr, 10000);
 		setInterval(fetchDecisions, 15000);
+		setInterval(fetchIntegrations, 15000);
+		setInterval(fetchRequestTracking, 15000);
 	</script>
 </body>
 </html>"""
@@ -1064,6 +1234,89 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<div class=\"row-actions\">
 					<button type=\"button\" class=\"secondary\" id=\"add-arr\">Add *arr</button>
 				</div>
+				<hr style=\"margin:0.9rem 0;border-color:#1f2937;border-width:0;border-top-width:1px;\" />
+				<h2>Request Tracking</h2>
+				<div class=\"muted\">
+					Configure request tracking to prevent duplicates and check for quality upgrades.
+				</div>
+				<label for=\"tracking_enabled\">Enable request tracking</label>
+				<select id=\"tracking_enabled\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+				<label for=\"check_duplicates\">Check for duplicates</label>
+				<select id=\"check_duplicates\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+				<label for=\"check_quality_profiles\">Check quality profiles</label>
+				<select id=\"check_quality_profiles\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+				<label for=\"send_suggestions\">Send quality suggestions</label>
+				<select id=\"send_suggestions\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+			</section>
+		</div>
+		<div class=\"grid\" style=\"margin-top:1.25rem;\">
+			<section class=\"card\">
+				<h2>Integration: n8n</h2>
+				<div class=\"muted\">Configure n8n automation platform integration.</div>
+				<label for=\"n8n_enabled\">Enable n8n</label>
+				<select id=\"n8n_enabled\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+				<label for=\"n8n_webhook_url\">Webhook URL</label>
+				<input id=\"n8n_webhook_url\" type=\"text\" placeholder=\"http://n8n:5678/webhook/qbittorrent-dispatcher\" />
+				<label for=\"n8n_api_key\">API Key (optional)</label>
+				<input id=\"n8n_api_key\" type=\"password\" placeholder=\"Optional for webhook authentication\" />
+			</section>
+			
+			<section class=\"card\">
+				<h2>Integration: Overseerr</h2>
+				<div class=\"muted\">Configure Overseerr for media request management.</div>
+				<label for=\"overseerr_enabled\">Enable Overseerr</label>
+				<select id=\"overseerr_enabled\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+				<label for=\"overseerr_url\">URL</label>
+				<input id=\"overseerr_url\" type=\"text\" placeholder=\"http://overseerr:5055\" />
+				<label for=\"overseerr_api_key\">API Key</label>
+				<input id=\"overseerr_api_key\" type=\"password\" placeholder=\"Your Overseerr API key\" />
+			</section>
+		</div>
+		<div class=\"grid\" style=\"margin-top:1.25rem;\">
+			<section class=\"card\">
+				<h2>Integration: Jellyseerr</h2>
+				<div class=\"muted\">Configure Jellyseerr for media request management.</div>
+				<label for=\"jellyseerr_enabled\">Enable Jellyseerr</label>
+				<select id=\"jellyseerr_enabled\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+				<label for=\"jellyseerr_url\">URL</label>
+				<input id=\"jellyseerr_url\" type=\"text\" placeholder=\"http://jellyseerr:5055\" />
+				<label for=\"jellyseerr_api_key\">API Key</label>
+				<input id=\"jellyseerr_api_key\" type=\"password\" placeholder=\"Your Jellyseerr API key\" />
+			</section>
+			
+			<section class=\"card\">
+				<h2>Integration: Prowlarr</h2>
+				<div class=\"muted\">Configure Prowlarr for indexer management.</div>
+				<label for=\"prowlarr_enabled\">Enable Prowlarr</label>
+				<select id=\"prowlarr_enabled\">
+					<option value=\"true\">Enabled</option>
+					<option value=\"false\">Disabled</option>
+				</select>
+				<label for=\"prowlarr_url\">URL</label>
+				<input id=\"prowlarr_url\" type=\"text\" placeholder=\"http://prowlarr:9696\" />
+				<label for=\"prowlarr_api_key\">API Key</label>
+				<input id=\"prowlarr_api_key\" type=\"password\" placeholder=\"Your Prowlarr API key\" />
 			</section>
 		</div>
 		<section class=\"card\" style=\"max-width:960px; margin:1.25rem auto 0;\">
@@ -1296,7 +1549,38 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				arr_instances.push({ name, type, url, api_key });
 			});
 
-			return { dispatcher, nodes, arr_instances };
+			const integrations = {
+				n8n: {
+					enabled: document.getElementById('n8n_enabled').value === 'true',
+					webhook_url: document.getElementById('n8n_webhook_url').value || null,
+					api_key: document.getElementById('n8n_api_key').value || null,
+				},
+				messaging_services: [],
+				overseerr: {
+					enabled: document.getElementById('overseerr_enabled').value === 'true',
+					url: document.getElementById('overseerr_url').value || '',
+					api_key: document.getElementById('overseerr_api_key').value || '',
+				},
+				jellyseerr: {
+					enabled: document.getElementById('jellyseerr_enabled').value === 'true',
+					url: document.getElementById('jellyseerr_url').value || '',
+					api_key: document.getElementById('jellyseerr_api_key').value || '',
+				},
+				prowlarr: {
+					enabled: document.getElementById('prowlarr_enabled').value === 'true',
+					url: document.getElementById('prowlarr_url').value || '',
+					api_key: document.getElementById('prowlarr_api_key').value || '',
+				},
+			};
+
+			const request_tracking = {
+				enabled: document.getElementById('tracking_enabled').value === 'true',
+				check_duplicates: document.getElementById('check_duplicates').value === 'true',
+				check_quality_profiles: document.getElementById('check_quality_profiles').value === 'true',
+				send_suggestions: document.getElementById('send_suggestions').value === 'true',
+			};
+
+			return { dispatcher, nodes, arr_instances, integrations, request_tracking };
 		}
 
 		async function loadConfigJson() {
@@ -1326,6 +1610,34 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				(cfg.arr_instances || []).forEach((a) => {
 					arrContainer.appendChild(createArrRow(a));
 				});
+				
+				// Load integrations config
+				if (cfg.integrations) {
+					document.getElementById('n8n_enabled').value = cfg.integrations.n8n.enabled ? 'true' : 'false';
+					document.getElementById('n8n_webhook_url').value = cfg.integrations.n8n.webhook_url || '';
+					document.getElementById('n8n_api_key').value = cfg.integrations.n8n.api_key || '';
+					
+					document.getElementById('overseerr_enabled').value = cfg.integrations.overseerr.enabled ? 'true' : 'false';
+					document.getElementById('overseerr_url').value = cfg.integrations.overseerr.url || '';
+					document.getElementById('overseerr_api_key').value = cfg.integrations.overseerr.api_key || '';
+					
+					document.getElementById('jellyseerr_enabled').value = cfg.integrations.jellyseerr.enabled ? 'true' : 'false';
+					document.getElementById('jellyseerr_url').value = cfg.integrations.jellyseerr.url || '';
+					document.getElementById('jellyseerr_api_key').value = cfg.integrations.jellyseerr.api_key || '';
+					
+					document.getElementById('prowlarr_enabled').value = cfg.integrations.prowlarr.enabled ? 'true' : 'false';
+					document.getElementById('prowlarr_url').value = cfg.integrations.prowlarr.url || '';
+					document.getElementById('prowlarr_api_key').value = cfg.integrations.prowlarr.api_key || '';
+				}
+				
+				// Load request tracking config
+				if (cfg.request_tracking) {
+					document.getElementById('tracking_enabled').value = cfg.request_tracking.enabled ? 'true' : 'false';
+					document.getElementById('check_duplicates').value = cfg.request_tracking.check_duplicates ? 'true' : 'false';
+					document.getElementById('check_quality_profiles').value = cfg.request_tracking.check_quality_profiles ? 'true' : 'false';
+					document.getElementById('send_suggestions').value = cfg.request_tracking.send_suggestions ? 'true' : 'false';
+				}
+				
 				setStatus('Loaded current configuration');
 			} catch (err) {
 				console.error(err);
