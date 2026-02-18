@@ -27,3 +27,54 @@ arr_instances:
   type: radarr
   url: http://radarr:7878/api/v3
   api_key: YOUR_RADARR_API_KEY
+
+# New integrations section
+integrations:
+  # n8n automation platform integration
+  n8n:
+    enabled: false
+    webhook_url: http://n8n:5678/webhook/qbittorrent-dispatcher
+    api_key: null  # Optional: API key for webhook authentication
+  
+  # Messaging services for notifications
+  messaging_services:
+    - name: discord-notifications
+      type: discord
+      enabled: false
+      webhook_url: https://discord.com/api/webhooks/YOUR_WEBHOOK_URL
+    
+    - name: slack-notifications
+      type: slack
+      enabled: false
+      webhook_url: https://hooks.slack.com/services/YOUR_WEBHOOK_URL
+    
+    - name: telegram-notifications
+      type: telegram
+      enabled: false
+      bot_token: YOUR_BOT_TOKEN
+      chat_id: YOUR_CHAT_ID
+  
+  # Overseerr integration for media requests
+  overseerr:
+    enabled: false
+    url: http://overseerr:5055
+    api_key: YOUR_OVERSEERR_API_KEY
+  
+  # Jellyseerr integration (alternative to Overseerr)
+  jellyseerr:
+    enabled: false
+    url: http://jellyseerr:5055
+    api_key: YOUR_JELLYSEERR_API_KEY
+  
+  # Prowlarr integration for indexer management
+  prowlarr:
+    enabled: false
+    url: http://prowlarr:9696
+    api_key: YOUR_PROWLARR_API_KEY
+
+# Request tracking and quality management
+request_tracking:
+  enabled: true
+  check_duplicates: true  # Prevent duplicate downloads
+  check_quality_profiles: true  # Check for better quality matches
+  send_suggestions: true  # Send suggestions for quality upgrades

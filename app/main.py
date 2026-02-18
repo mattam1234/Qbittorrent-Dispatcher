@@ -32,10 +32,18 @@ from .models import (
 	SubmissionConfig,
 	NodeConfigModel,
 	ArrInstanceModel,
+	MessagingServiceModel,
+	N8nConfigModel,
+	OverseerrConfigModel,
+	JellyseerrConfigModel,
+	ProwlarrConfigModel,
+	IntegrationsConfigModel,
+	RequestTrackingModel,
 )
 from .arr_client import check_arr_instance
 from .qb_client import QbittorrentNodeClient
 from .metrics import update_arr_metrics
+from .integrations import OverseerrClient, JellyseerrClient, ProwlarrClient
 import yaml
 import asyncio
 
@@ -159,8 +167,63 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			)
 			for a in getattr(config_obj, "arr_instances", []) or []
 		]
+		
+		# Build integrations config
+		integrations = getattr(config_obj, "integrations", None)
+		integrations_cfg = IntegrationsConfigModel()
+		if integrations:
+			integrations_cfg = IntegrationsConfigModel(
+				n8n=N8nConfigModel(
+					enabled=integrations.n8n.enabled,
+					webhook_url=integrations.n8n.webhook_url,
+					api_key=integrations.n8n.api_key,
+				),
+				messaging_services=[
+					MessagingServiceModel(
+						name=svc.name,
+						type=svc.type,
+						webhook_url=svc.webhook_url,
+						bot_token=svc.bot_token,
+						chat_id=svc.chat_id,
+						enabled=svc.enabled,
+					)
+					for svc in integrations.messaging_services
+				],
+				overseerr=OverseerrConfigModel(
+					enabled=integrations.overseerr.enabled,
+					url=integrations.overseerr.url,
+					api_key=integrations.overseerr.api_key,
+				),
+				jellyseerr=JellyseerrConfigModel(
+					enabled=integrations.jellyseerr.enabled,
+					url=integrations.jellyseerr.url,
+					api_key=integrations.jellyseerr.api_key,
+				),
+				prowlarr=ProwlarrConfigModel(
+					enabled=integrations.prowlarr.enabled,
+					url=integrations.prowlarr.url,
+					api_key=integrations.prowlarr.api_key,
+				),
+			)
+		
+		# Build request tracking config
+		tracking = getattr(config_obj, "request_tracking", None)
+		tracking_cfg = RequestTrackingModel()
+		if tracking:
+			tracking_cfg = RequestTrackingModel(
+				enabled=tracking.enabled,
+				check_duplicates=tracking.check_duplicates,
+				check_quality_profiles=tracking.check_quality_profiles,
+				send_suggestions=tracking.send_suggestions,
+			)
 
-		return AppConfigModel(dispatcher=dispatcher_cfg, nodes=nodes_cfg, arr_instances=arr_cfg)
+		return AppConfigModel(
+			dispatcher=dispatcher_cfg,
+			nodes=nodes_cfg,
+			arr_instances=arr_cfg,
+			integrations=integrations_cfg,
+			request_tracking=tracking_cfg,
+		)
 
 	@app.post("/config/json", response_model=AppConfigModel)
 	async def update_config_json(payload: AppConfigModel, _: None = Depends(require_admin)) -> AppConfigModel:
@@ -593,6 +656,221 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				),
 			)
 		return out
+
+	@app.get("/integrations/status")
+	async def integrations_status(_: None = Depends(require_admin)) -> dict:
+		"""Return status of all configured integrations."""
+		
+		status = {
+			"n8n": {
+				"enabled": config_obj.integrations.n8n.enabled,
+				"connected": False,
+				"error": None,
+			},
+			"overseerr": {
+				"enabled": config_obj.integrations.overseerr.enabled,
+				"connected": False,
+				"version": None,
+				"error": None,
+			},
+			"jellyseerr": {
+				"enabled": config_obj.integrations.jellyseerr.enabled,
+				"connected": False,
+				"version": None,
+				"error": None,
+			},
+			"prowlarr": {
+				"enabled": config_obj.integrations.prowlarr.enabled,
+				"connected": False,
+				"version": None,
+				"error": None,
+			},
+			"messaging_services": [],
+		}
+		
+		# Check n8n connection
+		if config_obj.integrations.n8n.enabled:
+			connected, error = await dispatcher.n8n_client.check_connection()
+			status["n8n"]["connected"] = connected
+			status["n8n"]["error"] = error
+		
+		# Check Overseerr
+		if config_obj.integrations.overseerr.enabled:
+			client = OverseerrClient(config_obj.integrations.overseerr)
+			connected, result = await client.check_status()
+			status["overseerr"]["connected"] = connected
+			if connected:
+				status["overseerr"]["version"] = result
+			else:
+				status["overseerr"]["error"] = result
+		
+		# Check Jellyseerr
+		if config_obj.integrations.jellyseerr.enabled:
+			client = JellyseerrClient(config_obj.integrations.jellyseerr)
+			connected, result = await client.check_status()
+			status["jellyseerr"]["connected"] = connected
+			if connected:
+				status["jellyseerr"]["version"] = result
+			else:
+				status["jellyseerr"]["error"] = result
+		
+		# Check Prowlarr
+		if config_obj.integrations.prowlarr.enabled:
+			client = ProwlarrClient(config_obj.integrations.prowlarr)
+			connected, result = await client.check_status()
+			status["prowlarr"]["connected"] = connected
+			if connected:
+				status["prowlarr"]["version"] = result
+			else:
+				status["prowlarr"]["error"] = result
+		
+		# List messaging services
+		for svc in config_obj.integrations.messaging_services:
+			status["messaging_services"].append({
+				"name": svc.name,
+				"type": svc.type,
+				"enabled": svc.enabled,
+			})
+		
+		return status
+
+	@app.get("/integrations/overseerr/requests")
+	async def overseerr_requests(_: None = Depends(require_admin)) -> dict:
+		"""Get pending requests from Overseerr."""
+		
+		if not config_obj.integrations.overseerr.enabled:
+			return {"error": "Overseerr not enabled", "requests": []}
+		
+		client = OverseerrClient(config_obj.integrations.overseerr)
+		requests = await client.get_pending_requests()
+		
+		return {
+			"count": len(requests),
+			"requests": [
+				{
+					"id": req.id,
+					"title": req.title,
+					"type": req.media_type,
+					"year": req.year,
+					"status": req.status,
+					"requested_by": req.requested_by,
+				}
+				for req in requests
+			],
+		}
+
+	@app.get("/integrations/jellyseerr/requests")
+	async def jellyseerr_requests(_: None = Depends(require_admin)) -> dict:
+		"""Get pending requests from Jellyseerr."""
+		
+		if not config_obj.integrations.jellyseerr.enabled:
+			return {"error": "Jellyseerr not enabled", "requests": []}
+		
+		client = JellyseerrClient(config_obj.integrations.jellyseerr)
+		requests = await client.get_pending_requests()
+		
+		return {
+			"count": len(requests),
+			"requests": [
+				{
+					"id": req.id,
+					"title": req.title,
+					"type": req.media_type,
+					"year": req.year,
+					"status": req.status,
+					"requested_by": req.requested_by,
+				}
+				for req in requests
+			],
+		}
+
+	@app.get("/integrations/prowlarr/indexers")
+	async def prowlarr_indexers(_: None = Depends(require_admin)) -> dict:
+		"""Get configured indexers from Prowlarr."""
+		
+		if not config_obj.integrations.prowlarr.enabled:
+			return {"error": "Prowlarr not enabled", "indexers": []}
+		
+		client = ProwlarrClient(config_obj.integrations.prowlarr)
+		indexers = await client.get_indexers()
+		
+		return {
+			"count": len(indexers),
+			"indexers": indexers,
+		}
+
+	@app.get("/request-tracking/all")
+	async def get_all_tracked_requests(_: None = Depends(require_admin)) -> dict:
+		"""Get all tracked requests."""
+		
+		if not dispatcher.request_tracker:
+			return {"error": "Request tracking not enabled", "requests": []}
+		
+		requests = dispatcher.request_tracker.get_all_requests()
+		
+		return {
+			"count": len(requests),
+			"requests": [
+				{
+					"name": req.name,
+					"category": req.category,
+					"size_gb": req.size_estimate_gb,
+					"timestamp": req.timestamp.isoformat(),
+					"source": req.source,
+					"quality_profile": req.quality_profile,
+					"selected_node": req.selected_node,
+					"status": req.status,
+				}
+				for req in requests
+			],
+		}
+
+	@app.get("/request-tracking/category/{category}")
+	async def get_tracked_requests_by_category(category: str, _: None = Depends(require_admin)) -> dict:
+		"""Get tracked requests for a specific category."""
+		
+		if not dispatcher.request_tracker:
+			return {"error": "Request tracking not enabled", "requests": []}
+		
+		requests = dispatcher.request_tracker.get_requests_by_category(category)
+		
+		return {
+			"category": category,
+			"count": len(requests),
+			"requests": [
+				{
+					"name": req.name,
+					"category": req.category,
+					"size_gb": req.size_estimate_gb,
+					"timestamp": req.timestamp.isoformat(),
+					"source": req.source,
+					"quality_profile": req.quality_profile,
+					"selected_node": req.selected_node,
+					"status": req.status,
+				}
+				for req in requests
+			],
+		}
+
+	@app.get("/quality-profiles")
+	async def get_quality_profiles(_: None = Depends(require_admin)) -> dict:
+		"""Get quality profiles from all configured ARR instances."""
+		
+		profiles = await dispatcher.quality_checker.get_all_profiles()
+		
+		result = {}
+		for arr_name, arr_profiles in profiles.items():
+			result[arr_name] = [
+				{
+					"id": p.id,
+					"name": p.name,
+					"cutoff": p.cutoff,
+					"upgrade_allowed": p.upgrade_allowed,
+				}
+				for p in arr_profiles
+			]
+		
+		return result
 
 	@app.get("/metrics")
 	async def metrics_endpoint() -> Response:

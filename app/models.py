@@ -97,9 +97,59 @@ class ArrInstanceModel(BaseModel):
 	api_key: str
 
 
+class MessagingServiceModel(BaseModel):
+	name: str
+	type: str  # discord, slack, telegram, etc.
+	webhook_url: Optional[str] = None
+	bot_token: Optional[str] = None
+	chat_id: Optional[str] = None
+	enabled: bool = True
+
+
+class N8nConfigModel(BaseModel):
+	enabled: bool = False
+	webhook_url: Optional[str] = None
+	api_key: Optional[str] = None
+
+
+class OverseerrConfigModel(BaseModel):
+	enabled: bool = False
+	url: str = ""
+	api_key: str = ""
+
+
+class JellyseerrConfigModel(BaseModel):
+	enabled: bool = False
+	url: str = ""
+	api_key: str = ""
+
+
+class ProwlarrConfigModel(BaseModel):
+	enabled: bool = False
+	url: str = ""
+	api_key: str = ""
+
+
+class IntegrationsConfigModel(BaseModel):
+	n8n: N8nConfigModel = N8nConfigModel()
+	messaging_services: list[MessagingServiceModel] = []
+	overseerr: OverseerrConfigModel = OverseerrConfigModel()
+	jellyseerr: JellyseerrConfigModel = JellyseerrConfigModel()
+	prowlarr: ProwlarrConfigModel = ProwlarrConfigModel()
+
+
+class RequestTrackingModel(BaseModel):
+	enabled: bool = True
+	check_duplicates: bool = True
+	check_quality_profiles: bool = True
+	send_suggestions: bool = True
+
+
 class AppConfigModel(BaseModel):
 	dispatcher: DispatcherConfig
 	nodes: list[NodeConfigModel]
 	arr_instances: list[ArrInstanceModel] = []
+	integrations: IntegrationsConfigModel = IntegrationsConfigModel()
+	request_tracking: RequestTrackingModel = RequestTrackingModel()
 
 
