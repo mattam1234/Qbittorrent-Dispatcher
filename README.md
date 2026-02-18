@@ -2,138 +2,133 @@
 
 FastAPI-based dispatcher that selects the best qBittorrent node based on free disk space, active downloads, and bandwidth, then forwards torrent submissions from *arr apps to the best qBittorrent node.
 
-## ✨ New Features
+## Table of Contents
 
-### 🤖 Enhanced Automation & Integration
+- [Features](#new-features)
+- [Quick Start](#quick-start)
+- [How It Works](#how-it-works)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+  - [Running Locally](#running-locally)
+  - [Docker](#docker)
+  - [Docker Compose](#docker-compose)
+- [Configuration](#configuration)
+- [Sonarr/Radarr Integration](#sonarrradarr-integration)
+- [Testing](#testing)
+- [API Endpoints](#api-endpoints)
+  - [Integration Management](#integration-management)
+  - [Request Tracking](#request-tracking)
+  - [Quality Profiles](#quality-profiles)
+- [Connection Checks & Testing](#connection-checks--testing)
+- [Web UI, Decision History, and Admin API Key](#web-ui-decision-history-and-admin-api-key)
+- [Prometheus Metrics](#prometheus-metrics)
+- [Features in Action](#features-in-action)
+- [Example Use Cases](#example-use-cases)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+## New Features
+
+### Enhanced Automation & Integration
 - **n8n Integration**: Trigger automated workflows on download events (started, completed, duplicates detected, quality suggestions)
 - **Messaging Services**: Send notifications via Discord, Slack, or Telegram for download events
 - **Request Tracking**: Centralized tracking of all download requests to prevent duplicates
 - **Quality Profile Checking**: Automatically check for better quality matches based on ARR stack profiles
 - **Smart Suggestions**: Get suggestions for quality upgrades when better options are available
 
-### 📦 Extended Media Management
+### Extended Media Management
 - **Overseerr Integration**: Fetch and manage media requests from Overseerr
 - **Jellyseerr Integration**: Alternative to Overseerr for media request management
 - **Prowlarr Integration**: Enhanced indexer management and search capabilities
 - **Duplicate Prevention**: Automatic detection and rejection of duplicate downloads
 - **Profile-Based Quality Matching**: Ensure downloads match your configured quality profiles
 
-## Configuration
+## Quick Start
 
-Edit [config.yaml](config.yaml) to define dispatcher weights, security, qBittorrent nodes, and optional *arr instances.
+Get up and running in minutes:
 
-Top-level structure:
-
-```yaml
-dispatcher:
-	disk_weight: 1.0
-	download_weight: 2.0
-	bandwidth_weight: 0.1
-	max_downloads: 50
-	min_score: -1.0
-	# Optional admin API key; when set, protects management endpoints with X-API-Key
-	# admin_api_key: supersecret
-	submission:
-		max_retries: 2
-		save_path: null
-
-nodes:
-	- name: qbittorrent-1
-		url: http://qbittorrent:8080
-		username: admin
-		password: secret
-		min_free_gb: 500
-		# Optional per-node weight multiplier (default 1.0)
-		# weight: 1.0
-
-arr_instances:
-	- name: sonarr-main
-		type: sonarr
-		url: http://sonarr:8989/api/v3
-		api_key: YOUR_SONARR_API_KEY
-	- name: radarr-main
-		type: radarr
-		url: http://radarr:7878/api/v3
-		api_key: YOUR_RADARR_API_KEY
-
-# New: Integrations for enhanced automation
-integrations:
-	# n8n automation platform
-	n8n:
-		enabled: false
-		webhook_url: http://n8n:5678/webhook/qbittorrent-dispatcher
-		api_key: null  # Optional for webhook authentication
-	
-	# Messaging services for notifications
-	messaging_services:
-		- name: discord-notifications
-			type: discord
-			enabled: false
-			webhook_url: https://discord.com/api/webhooks/YOUR_WEBHOOK_URL
-		
-		- name: slack-notifications
-			type: slack
-			enabled: false
-			webhook_url: https://hooks.slack.com/services/YOUR_WEBHOOK_URL
-		
-		- name: telegram-notifications
-			type: telegram
-			enabled: false
-			bot_token: YOUR_BOT_TOKEN
-			chat_id: YOUR_CHAT_ID
-	
-	# Media request management
-	overseerr:
-		enabled: false
-		url: http://overseerr:5055
-		api_key: YOUR_OVERSEERR_API_KEY
-	
-	jellyseerr:
-		enabled: false
-		url: http://jellyseerr:5055
-		api_key: YOUR_JELLYSEERR_API_KEY
-	
-	# Indexer management
-	prowlarr:
-		enabled: false
-		url: http://prowlarr:9696
-		api_key: YOUR_PROWLARR_API_KEY
-
-# Request tracking and quality management
-request_tracking:
-	enabled: true
-	check_duplicates: true  # Prevent duplicate downloads
-	check_quality_profiles: true  # Check for better quality matches
-	send_suggestions: true  # Send suggestions for quality upgrades
-```
-
-The dispatcher will connect to each qBittorrent `url` using the WebUI API and use `min_free_gb`, active downloads, bandwidth, and optional node `weight` to score and select nodes.
-
-## Running locally
+### Using Docker Compose (Recommended)
 
 ```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Clone the repository
+git clone https://github.com/mattam1234/Qbittorrent-Dispatcher.git
+cd Qbittorrent-Dispatcher
+
+# Edit config.yaml with your qBittorrent nodes and ARR instances
+nano config.yaml
+
+# Start the dispatcher
+docker compose up -d
+
+# Access the Web UI at http://localhost:8001
 ```
 
-## Testing
-
-Run the integration test suite to verify all features are working:
-
-```bash
-./tests/run_tests.sh
-```
-
-See [tests/README.md](tests/README.md) for more details on the test suite.
-
-## Docker
+### Using Docker
 
 ```bash
 docker build -t qb-dispatcher .
 docker run --rm -p 8000:8000 -v ${PWD}/config.yaml:/app/config.yaml qb-dispatcher
 ```
 
-## Docker Compose
+### Using Python
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## How It Works
+
+The dispatcher acts as a smart proxy between your *arr applications (Sonarr/Radarr) and multiple qBittorrent instances:
+
+1. **Request Reception**: Sonarr/Radarr sends a torrent download request to the dispatcher
+2. **Node Evaluation**: The dispatcher evaluates all configured qBittorrent nodes based on:
+   - Available disk space (weighted by `disk_weight`)
+   - Active downloads (weighted by `download_weight`)
+   - Current bandwidth usage (weighted by `bandwidth_weight`)
+   - Minimum free space requirements
+3. **Smart Selection**: The node with the highest score is selected
+4. **Torrent Submission**: The magnet link is forwarded to the selected node
+5. **Tracking & Notifications**: The request is tracked and notifications are sent (if configured)
+
+```
+┌─────────┐     ┌────────────┐     ┌──────────────┐
+│ Sonarr  │────▶│ Dispatcher │────▶│ qBittorrent 1│
+└─────────┘     │            │     └──────────────┘
+┌─────────┐     │   (Smart   │     ┌──────────────┐
+│ Radarr  │────▶│   Routing) │────▶│ qBittorrent 2│
+└─────────┘     └────────────┘     └──────────────┘
+```
+
+## Prerequisites
+
+- Python 3.12 or higher (for local installation)
+- Docker and Docker Compose (for containerized deployment)
+- One or more qBittorrent instances with Web UI enabled
+- (Optional) Sonarr/Radarr instances
+- (Optional) Overseerr/Jellyseerr for media requests
+- (Optional) Prowlarr for indexer management
+- (Optional) n8n for workflow automation
+- (Optional) Discord/Slack/Telegram webhooks for notifications
+
+## Installation
+
+### Running Locally
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Docker
+
+```bash
+docker build -t qb-dispatcher .
+docker run --rm -p 8000:8000 -v ${PWD}/config.yaml:/app/config.yaml qb-dispatcher
+```
+
+### Docker Compose
 
 For easier local development, you can use the provided [docker-compose.yml](docker-compose.yml):
 
@@ -147,16 +142,111 @@ This will:
 - Mount `config.yaml` into the container at `/app/config.yaml` (read/write, for the web configurator)
 - Attach it to a `qbnet` bridge network (for co-locating qBittorrent/Sonarr/Radarr containers)
 
-POST `/submit` accepts a JSON body like:
+## Configuration
 
-```json
-{
-	"name": "Movie.Title.2024.2160p",
-	"category": "movies-uhd",
-	"size_estimate_gb": 68,
-	"magnet": "magnet:?xt=urn:btih:..."
-}
+Edit [config.yaml](config.yaml) to define dispatcher weights, security, qBittorrent nodes, and optional *arr instances.
+
+### Configuration File Structure
+
+```yaml
+dispatcher:
+  disk_weight: 1.0
+  download_weight: 2.0
+  bandwidth_weight: 0.1
+  max_downloads: 50
+  min_score: -1.0
+  # Optional admin API key; when set, protects management endpoints with X-API-Key
+  # admin_api_key: supersecret
+  submission:
+    max_retries: 2
+    save_path: null
+
+nodes:
+  - name: qbittorrent-1
+    url: http://qbittorrent:8080
+    username: admin
+    password: secret
+    min_free_gb: 500
+    # Optional per-node weight multiplier (default 1.0)
+    # weight: 1.0
+
+arr_instances:
+  - name: sonarr-main
+    type: sonarr
+    url: http://sonarr:8989/api/v3
+    api_key: YOUR_SONARR_API_KEY
+  - name: radarr-main
+    type: radarr
+    url: http://radarr:7878/api/v3
+    api_key: YOUR_RADARR_API_KEY
+
+# New: Integrations for enhanced automation
+integrations:
+  # n8n automation platform
+  n8n:
+    enabled: false
+    webhook_url: http://n8n:5678/webhook/qbittorrent-dispatcher
+    api_key: null  # Optional for webhook authentication
+  
+  # Messaging services for notifications
+  messaging_services:
+    - name: discord-notifications
+      type: discord
+      enabled: false
+      webhook_url: https://discord.com/api/webhooks/YOUR_WEBHOOK_URL
+    
+    - name: slack-notifications
+      type: slack
+      enabled: false
+      webhook_url: https://hooks.slack.com/services/YOUR_WEBHOOK_URL
+    
+    - name: telegram-notifications
+      type: telegram
+      enabled: false
+      bot_token: YOUR_BOT_TOKEN
+      chat_id: YOUR_CHAT_ID
+  
+  # Media request management
+  overseerr:
+    enabled: false
+    url: http://overseerr:5055
+    api_key: YOUR_OVERSEERR_API_KEY
+  
+  jellyseerr:
+    enabled: false
+    url: http://jellyseerr:5055
+    api_key: YOUR_JELLYSEERR_API_KEY
+  
+  # Indexer management
+  prowlarr:
+    enabled: false
+    url: http://prowlarr:9696
+    api_key: YOUR_PROWLARR_API_KEY
+
+# Request tracking and quality management
+request_tracking:
+  enabled: true
+  check_duplicates: true  # Prevent duplicate downloads
+  check_quality_profiles: true  # Check for better quality matches
+  send_suggestions: true  # Send suggestions for quality upgrades
 ```
+
+### Key Configuration Options
+
+**Dispatcher Weights:**
+- `disk_weight`: How much to prioritize nodes with more free disk space (default: 1.0)
+- `download_weight`: How much to prioritize nodes with fewer active downloads (default: 2.0)
+- `bandwidth_weight`: How much to consider current bandwidth usage (default: 0.1)
+- `max_downloads`: Maximum number of active downloads allowed per node
+- `min_score`: Minimum acceptable score for a node to be eligible
+
+**Node Settings:**
+- `url`: qBittorrent Web UI URL
+- `username`/`password`: qBittorrent credentials
+- `min_free_gb`: Minimum free disk space required (in GB)
+- `weight`: Optional multiplier for this node's score (default: 1.0)
+
+The dispatcher will connect to each qBittorrent `url` using the WebUI API and use `min_free_gb`, active downloads, bandwidth, and optional node `weight` to score and select nodes.
 
 ## Sonarr/Radarr integration
 
@@ -173,23 +263,115 @@ The dispatcher implements the qBittorrent endpoints Sonarr/Radarr use for adding
 - `POST /api/v2/torrents/add` – reads the `urls` and `category` form fields and routes the magnet through the space-aware dispatcher
 - `GET /api/v2/app/version` and `/api/v2/app/webapiVersion` – minimal responses so *arr clients recognize the service
 
-Ensure your indexers are configured to use magnet links (the dispatcher currently only supports magnets, not uploaded `.torrent` files).
+**Important**: Ensure your indexers are configured to use magnet links (the dispatcher currently only supports magnets, not uploaded `.torrent` files).
 
-## Connection checks & test buttons
+## Testing
 
-- qBittorrent nodes
-	- `GET /nodes` – performs live connection checks to all configured qBittorrent nodes and reports `reachable` plus scores and exclusion reasons.
-	- `/config` UI – each node row has a **Test** button that calls `POST /config/test/node` with the row’s values and shows free space / active downloads or an error.
+Run the integration test suite to verify all features are working:
 
-- Sonarr/Radarr instances
-	- Configure `arr_instances` as shown in the configuration section above.
-	- `GET /arr` – checks each instance by calling `<url>/system/status` with `X-Api-Key` and returns:
-		- `reachable: true/false`
-		- `version` (if available)
-		- `error` (HTTP status or exception text when unreachable)
-	- `/config` UI – each *arr row has a **Test** button that calls `POST /config/test/arr` and shows reachability and version.
+```bash
+./tests/run_tests.sh
+```
 
-## Web UI, decision history, and admin API key
+See [tests/README.md](tests/README.md) for more details on the test suite.
+
+## API Endpoints
+
+### Core Endpoints
+
+#### Submit Download
+```http
+POST /submit
+```
+Submit a new download and have the dispatcher pick the best node.
+
+**Request Body:**
+```json
+{
+  "name": "Movie.Title.2024.2160p",
+  "category": "movies-uhd",
+  "size_estimate_gb": 68,
+  "magnet": "magnet:?xt=urn:btih:..."
+}
+```
+
+**Response:**
+```json
+{
+  "status": "accepted",
+  "node": "qbittorrent-1",
+  "message": "Torrent submitted successfully"
+}
+```
+
+#### Get Node Status
+```http
+GET /nodes
+```
+Performs live connection checks to all configured qBittorrent nodes and reports reachability, scores, and exclusion reasons.
+
+**Response:**
+```json
+{
+  "nodes": [
+    {
+      "name": "qbittorrent-1",
+      "reachable": true,
+      "score": 0.85,
+      "free_gb": 1250.5,
+      "active_downloads": 3
+    }
+  ]
+}
+```
+
+#### Get ARR Status
+```http
+GET /arr
+```
+Checks each ARR instance connectivity and returns version information.
+
+#### Get Decision History
+```http
+GET /decisions
+```
+Returns the recent download routing decisions (last ~50 submissions).
+
+## Connection Checks & Testing
+
+### qBittorrent Nodes
+
+**API Endpoint:**
+- `GET /nodes` – performs live connection checks to all configured qBittorrent nodes and reports `reachable` status, scores, and exclusion reasons.
+
+**Web UI:**
+- Navigate to `/config` in your browser
+- Each node row has a **Test** button
+- Click to test connectivity and view:
+  - Free disk space
+  - Active downloads
+  - Connection status
+  - Any errors
+
+### Sonarr/Radarr Instances
+
+Configure `arr_instances` as shown in the configuration section above.
+
+**API Endpoint:**
+- `GET /arr` – checks each instance by calling `<url>/system/status` with `X-Api-Key` and returns:
+  - `reachable: true/false`
+  - `version` (if available)
+  - `error` (HTTP status or exception text when unreachable)
+
+**Web UI:**
+- Navigate to `/config` in your browser
+- Each *arr row has a **Test** button
+- Click to verify:
+  - Connectivity
+  - Version information
+  - API key validity
+
+## Web UI, Decision History, and Admin API Key
 
 - Dashboard
 	- `GET /` – shows:
@@ -224,8 +406,6 @@ The dispatcher exposes basic Prometheus metrics to help you monitor health and r
 	- `dispatcher_submission_total{status="accepted|rejected|failed"}` – counter of submissions by outcome.
 
 Point Prometheus at the dispatcher service and scrape `/metrics` on port 8000 inside Docker (or your mapped host port, e.g. 8001).
-
-## New API Endpoints
 
 ### Integration Management
 
@@ -404,4 +584,121 @@ Configure Discord, Slack, or Telegram to receive:
 3. Enable suggestions to get notified of better options
 4. Review suggestions and manually upgrade when desired
 
+## Troubleshooting
 
+### Common Issues
+
+#### Dispatcher can't connect to qBittorrent nodes
+
+**Symptoms**: Node shows as unreachable in `/nodes` or dashboard
+
+**Solutions**:
+- Verify qBittorrent Web UI is enabled (Settings → Web UI)
+- Check the URL is accessible from the dispatcher container/host
+- Verify username and password are correct
+- Check firewall rules allow connections
+- Test connectivity: `curl http://qbittorrent:8080/api/v2/app/version`
+
+#### Sonarr/Radarr can't connect to dispatcher
+
+**Symptoms**: Test connection fails in Sonarr/Radarr download client settings
+
+**Solutions**:
+- Verify dispatcher is running and accessible
+- Check the host and port are correct (e.g., `http://dispatcher:8000`)
+- Ensure you're using the qBittorrent client type in Sonarr/Radarr
+- Any username/password will work (authentication is always accepted)
+- Check logs: `docker logs qb-dispatcher`
+
+#### Downloads always go to the same node
+
+**Symptoms**: Load isn't distributed across nodes
+
+**Solutions**:
+- Check if other nodes are being excluded (view `/nodes` endpoint)
+- Verify `min_free_gb` requirements are met on all nodes
+- Review dispatcher weights in `config.yaml`
+- Check if nodes have significantly different disk space (high `disk_weight` favors nodes with more space)
+- Adjust `download_weight` to better balance based on active torrents
+
+#### Configuration changes not taking effect
+
+**Symptoms**: Changes to `config.yaml` don't seem to apply
+
+**Solutions**:
+- Restart the dispatcher after config changes: `docker restart qb-dispatcher`
+- Or use the web configurator at `/config` which applies changes immediately
+- Check for YAML syntax errors: `python -c "import yaml; yaml.safe_load(open('config.yaml'))"`
+- Verify the config file is mounted correctly in Docker
+
+#### Admin endpoints require authentication but I didn't set it
+
+**Symptoms**: Getting 401 errors on management endpoints
+
+**Solutions**:
+- Check if `dispatcher.admin_api_key` is set in `config.yaml`
+- Remove or comment out `admin_api_key` to disable authentication
+- Or add `X-API-Key` header with the configured value
+
+### Debugging
+
+Enable detailed logging by checking dispatcher logs:
+
+```bash
+# Docker
+docker logs -f qb-dispatcher
+
+# Local
+# Logs will appear in console when running uvicorn
+```
+
+Check node connectivity and scores:
+```bash
+curl http://localhost:8001/nodes
+```
+
+View recent routing decisions:
+```bash
+curl http://localhost:8001/decisions
+```
+
+Test the decision logic without actually submitting:
+```bash
+curl -X POST http://localhost:8001/debug/decision \
+  -H "Content-Type: application/json" \
+  -d '{"name":"test","category":"movies","size_estimate_gb":50,"magnet":"magnet:?xt=urn:btih:test"}'
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Run tests (`./tests/run_tests.sh`)
+5. Commit your changes (`git commit -m 'Add amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+### Development Setup
+
+```bash
+# Clone the repo
+git clone https://github.com/mattam1234/Qbittorrent-Dispatcher.git
+cd Qbittorrent-Dispatcher
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run in development mode
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## License
+
+This project is open source and available under the MIT License.
+
+---
+
+**Need help?** Open an issue on [GitHub](https://github.com/mattam1234/Qbittorrent-Dispatcher/issues)
