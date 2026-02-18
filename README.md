@@ -4,9 +4,7 @@ FastAPI-based dispatcher that selects the best qBittorrent node based on free di
 
 ## Table of Contents
 
-- [Features](#-new-features)
-  - [Enhanced Automation & Integration](#-enhanced-automation--integration)
-  - [Extended Media Management](#-extended-media-management)
+- [Features](#new-features)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [Prerequisites](#prerequisites)
@@ -21,24 +19,25 @@ FastAPI-based dispatcher that selects the best qBittorrent node based on free di
   - [Integration Management](#integration-management)
   - [Request Tracking](#request-tracking)
   - [Quality Profiles](#quality-profiles)
-- [Web UI & Admin](#web-ui-decision-history-and-admin-api-key)
-- [Monitoring](#prometheus-metrics)
+- [Connection Checks & Testing](#connection-checks--testing)
+- [Web UI, Decision History, and Admin API Key](#web-ui-decision-history-and-admin-api-key)
+- [Prometheus Metrics](#prometheus-metrics)
 - [Features in Action](#features-in-action)
 - [Example Use Cases](#example-use-cases)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 
-## ✨ New Features
+## New Features
 
-### 🤖 Enhanced Automation & Integration
+### Enhanced Automation & Integration
 - **n8n Integration**: Trigger automated workflows on download events (started, completed, duplicates detected, quality suggestions)
 - **Messaging Services**: Send notifications via Discord, Slack, or Telegram for download events
 - **Request Tracking**: Centralized tracking of all download requests to prevent duplicates
 - **Quality Profile Checking**: Automatically check for better quality matches based on ARR stack profiles
 - **Smart Suggestions**: Get suggestions for quality upgrades when better options are available
 
-### 📦 Extended Media Management
+### Extended Media Management
 - **Overseerr Integration**: Fetch and manage media requests from Overseerr
 - **Jellyseerr Integration**: Alternative to Overseerr for media request management
 - **Prowlarr Integration**: Enhanced indexer management and search capabilities
