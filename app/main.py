@@ -1059,74 +1059,74 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			limit = 50
 		return dispatcher.get_decisions(limit=limit)
 
-		@app.post("/config/test/node", response_model=NodeStatus)
-		async def test_node_connection(node: NodeConfigModel, _: None = Depends(require_admin)) -> NodeStatus:
-			"""Test connectivity to a qBittorrent node using the provided settings.
+	@app.post("/config/test/node", response_model=NodeStatus)
+	async def test_node_connection(node: NodeConfigModel, _: None = Depends(require_admin)) -> NodeStatus:
+		"""Test connectivity to a qBittorrent node using the provided settings.
 
-			This does not persist any configuration; it simply attempts to reach the
-			WebUI and returns basic metrics or an error string.
-			"""
+		This does not persist any configuration; it simply attempts to reach the
+		WebUI and returns basic metrics or an error string.
+		"""
 
-			config_dc = NodeConfigDC(
-				name=node.name,
-				url=node.url,
-				username=node.username,
-				password=node.password,
-				min_free_gb=node.min_free_gb,
-				weight=1.0,
-			)
+		config_dc = NodeConfigDC(
+			name=node.name,
+			url=node.url,
+			username=node.username,
+			password=node.password,
+			min_free_gb=node.min_free_gb,
+			weight=1.0,
+		)
 
-			client = QbittorrentNodeClient(config_dc)
-			try:
-				state = await to_thread.run_sync(client.fetch_state)
-				metrics = NodeMetrics(
-					name=config_dc.name,
-					free_disk_gb=state.free_disk_gb,
-					active_downloads=state.active_downloads,
-					paused_downloads=state.paused_downloads,
-					global_download_rate_mbps=state.global_download_rate_mbps,
-					reachable=True,
-					excluded_reason=None,
-					score=None,
-				)
-				return NodeStatus(metrics=metrics, excluded=False)
-			except Exception as exc:  # noqa: BLE001
-				metrics = NodeMetrics(
-					name=config_dc.name,
-					free_disk_gb=None,
-					active_downloads=0,
-					paused_downloads=0,
-					global_download_rate_mbps=0.0,
-					reachable=False,
-					excluded_reason=str(exc),
-					score=None,
-				)
-				return NodeStatus(metrics=metrics, excluded=True)
-
-		@app.post("/config/test/arr", response_model=ArrStatus)
-		async def test_arr_connection(inst: ArrInstanceModel, _: None = Depends(require_admin)) -> ArrStatus:
-			"""Test connectivity to a Sonarr/Radarr instance using the provided settings.
-
-			This does not persist any configuration; it simply calls /system/status
-			and reports reachability and version.
-			"""
-
-			config_dc = ArrInstanceConfig(
-				name=inst.name,
-				type=inst.type,
-				url=inst.url,
-				api_key=inst.api_key,
-			)
-
-			state = await check_arr_instance(config_dc)
-			return ArrStatus(
+		client = QbittorrentNodeClient(config_dc)
+		try:
+			state = await to_thread.run_sync(client.fetch_state)
+			metrics = NodeMetrics(
 				name=config_dc.name,
-				type=config_dc.type,
-				url=config_dc.url,
-				reachable=state.reachable,
-				version=state.version,
-				error=state.error,
+				free_disk_gb=state.free_disk_gb,
+				active_downloads=state.active_downloads,
+				paused_downloads=state.paused_downloads,
+				global_download_rate_mbps=state.global_download_rate_mbps,
+				reachable=True,
+				excluded_reason=None,
+				score=None,
 			)
+			return NodeStatus(metrics=metrics, excluded=False)
+		except Exception as exc:  # noqa: BLE001
+			metrics = NodeMetrics(
+				name=config_dc.name,
+				free_disk_gb=None,
+				active_downloads=0,
+				paused_downloads=0,
+				global_download_rate_mbps=0.0,
+				reachable=False,
+				excluded_reason=str(exc),
+				score=None,
+			)
+			return NodeStatus(metrics=metrics, excluded=True)
+
+	@app.post("/config/test/arr", response_model=ArrStatus)
+	async def test_arr_connection(inst: ArrInstanceModel, _: None = Depends(require_admin)) -> ArrStatus:
+		"""Test connectivity to a Sonarr/Radarr instance using the provided settings.
+
+		This does not persist any configuration; it simply calls /system/status
+		and reports reachability and version.
+		"""
+
+		config_dc = ArrInstanceConfig(
+			name=inst.name,
+			type=inst.type,
+			url=inst.url,
+			api_key=inst.api_key,
+		)
+
+		state = await check_arr_instance(config_dc)
+		return ArrStatus(
+			name=config_dc.name,
+			type=config_dc.type,
+			url=config_dc.url,
+			reachable=state.reachable,
+			version=state.version,
+			error=state.error,
+		)
 
 	@app.get("/config", response_class=HTMLResponse)
 	async def config_ui(_: None = Depends(require_admin)) -> str:
