@@ -723,3 +723,114 @@ class TestApiEndpoints:
     def test_qb_torrents_add_non_magnet(self, client):
         resp = client.post("/api/v2/torrents/add", data={"urls": "http://example.com/file.torrent", "category": "movies"})
         assert resp.status_code == 400
+
+    def test_decisions_ui(self, client):
+        """Verify /decisions/ui serves an HTML page."""
+        resp = client.get("/decisions/ui")
+        assert resp.status_code == 200
+        assert "Decision History" in resp.text
+        assert "decisions-body" in resp.text
+
+    def test_decisions_ui_registered(self, app):
+        """Verify /decisions/ui is registered as a route."""
+        routes = {r.path for r in app.routes}
+        assert "/decisions/ui" in routes
+
+    def test_config_json_includes_admin_api_key_field(self, client):
+        """Verify /config/json response includes admin_api_key field."""
+        resp = client.get("/config/json")
+        assert resp.status_code == 200
+        data = resp.json()
+        # admin_api_key should be present (None when not configured)
+        assert "admin_api_key" in data["dispatcher"]
+        assert data["dispatcher"]["admin_api_key"] is None
+
+    def test_config_json_masks_admin_api_key(self):
+        """Verify /config/json returns masked sentinel when admin_api_key is configured."""
+        raw = {
+            "dispatcher": {"admin_api_key": "mysecret"},
+            "nodes": [{"name": "n1", "url": "http://x:8080", "username": "u", "password": "p"}],
+        }
+        from app.main import create_app
+        from app.config import parse_config
+        from fastapi.testclient import TestClient
+        config = parse_config(raw)
+        app = create_app(config)
+        client = TestClient(app)
+        resp = client.get("/config/json", headers={"X-API-Key": "mysecret"})
+        assert resp.status_code == 200
+        data = resp.json()
+        # Should be masked, not the raw value
+        assert data["dispatcher"]["admin_api_key"] == "********"
+
+    def test_config_json_node_includes_weight(self, client):
+        """Verify /config/json returns node weight."""
+        resp = client.get("/config/json")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["nodes"]) > 0
+        assert "weight" in data["nodes"][0]
+        assert data["nodes"][0]["weight"] == 1.0
+
+    def test_config_update_preserves_masked_admin_key(self):
+        """POST /config/json with '********' admin_api_key preserves the existing key."""
+        raw = {
+            "dispatcher": {"admin_api_key": "supersecretkey"},
+            "nodes": [{"name": "n1", "url": "http://x:8080", "username": "u", "password": "p"}],
+        }
+        from app.main import create_app
+        from app.config import parse_config
+        from fastapi.testclient import TestClient
+        config = parse_config(raw)
+        app = create_app(config)
+        client = TestClient(app)
+
+        # GET current config (masked)
+        resp = client.get("/config/json", headers={"X-API-Key": "supersecretkey"})
+        cfg = resp.json()
+        assert cfg["dispatcher"]["admin_api_key"] == "********"
+
+        # POST back with the masked sentinel — key should be preserved
+        resp = client.post("/config/json", json=cfg, headers={"X-API-Key": "supersecretkey"})
+        assert resp.status_code == 200
+        returned = resp.json()
+        # Still masked (not cleared)
+        assert returned["dispatcher"]["admin_api_key"] == "********"
+
+
+# ─── Periodic cleanup tests ───────────────────────────────────────────────────
+
+class TestPeriodicCleanup:
+    def test_cleanup_removes_old_requests(self):
+        """cleanup_old_requests removes requests older than threshold."""
+        from datetime import datetime, timedelta
+        tracker = RequestTracker()
+        req = make_submit_request()
+        request_id = tracker.add_request(req)
+        # Age the request beyond the threshold
+        tracker._requests[request_id].timestamp = datetime.now() - timedelta(days=10)
+
+        removed = tracker.cleanup_old_requests(days=7)
+        assert removed == 1
+        assert tracker.get_request(request_id) is None
+
+    def test_cleanup_keeps_recent_requests(self):
+        """cleanup_old_requests preserves requests within the threshold."""
+        tracker = RequestTracker()
+        req = make_submit_request()
+        tracker.add_request(req)
+
+        removed = tracker.cleanup_old_requests(days=7)
+        assert removed == 0
+        assert len(tracker.get_all_requests()) == 1
+
+    def test_cleanup_also_removes_from_category_index(self):
+        """cleanup_old_requests removes stale request IDs from category index."""
+        from datetime import datetime, timedelta
+        tracker = RequestTracker()
+        req = make_submit_request(category="movies")
+        request_id = tracker.add_request(req)
+        tracker._requests[request_id].timestamp = datetime.now() - timedelta(days=10)
+
+        tracker.cleanup_old_requests(days=7)
+        assert tracker.get_requests_by_category("movies") == []
