@@ -78,6 +78,7 @@ class DispatcherConfig(BaseModel):
 	bandwidth_weight: float = 0.1
 	max_downloads: int = 50
 	min_score: float = -1.0
+	admin_api_key: Optional[str] = None
 	submission: SubmissionConfig = SubmissionConfig()
 
 
