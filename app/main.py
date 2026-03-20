@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -45,7 +47,10 @@ from .qb_client import QbittorrentNodeClient
 from .metrics import update_arr_metrics
 from .integrations import OverseerrClient, JellyseerrClient, ProwlarrClient
 import yaml
-import asyncio
+
+logger = logging.getLogger(__name__)
+
+_CLEANUP_INTERVAL_SECONDS = 3600  # 1 hour
 
 
 def configure_logging() -> None:
@@ -70,7 +75,29 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 
 	config_obj = config
 	dispatcher = Dispatcher(config_obj)
-	app = FastAPI(title="Space-Aware qBittorrent Dispatcher")
+
+	@asynccontextmanager
+	async def lifespan(app: FastAPI):  # noqa: ARG001
+		"""Background cleanup task for old tracked requests."""
+		async def _cleanup_loop() -> None:
+			while True:
+				await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
+				if dispatcher.request_tracker:
+					removed = dispatcher.request_tracker.cleanup_old_requests(days=7)
+					if removed:
+						logger.info("Periodic cleanup removed %d old tracked requests", removed)
+
+		task = asyncio.create_task(_cleanup_loop())
+		try:
+			yield
+		finally:
+			task.cancel()
+			try:
+				await task
+			except asyncio.CancelledError:
+				pass
+
+	app = FastAPI(title="Space-Aware qBittorrent Dispatcher", lifespan=lifespan)
 
 	async def require_admin(request: Request) -> None:
 		"""Optional admin API key check for management endpoints.
@@ -141,6 +168,9 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			bandwidth_weight=disp.bandwidth_weight,
 			max_downloads=disp.max_downloads,
 			min_score=disp.min_score,
+			# Return a masked sentinel so the UI can tell a key is configured
+			# without leaking the actual secret value.
+			admin_api_key="********" if disp.admin_api_key else None,
 			submission=SubmissionConfig(
 				max_retries=sub.max_retries,
 				save_path=sub.save_path,
@@ -154,6 +184,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				username=n.username,
 				password=n.password,
 				min_free_gb=n.min_free_gb,
+				weight=n.weight,
 			)
 			for n in config_obj.nodes
 		]
@@ -229,7 +260,14 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 	async def update_config_json(payload: AppConfigModel, _: None = Depends(require_admin)) -> AppConfigModel:
 		"""Validate and persist structured JSON config, then hot-reload dispatcher."""
 
+		nonlocal config_obj, dispatcher
 		raw = payload.model_dump()
+		# If the UI submitted the masked sentinel, preserve the existing key
+		if raw.get("dispatcher", {}).get("admin_api_key") == "********":
+			raw["dispatcher"]["admin_api_key"] = config_obj.dispatcher.admin_api_key
+		# An empty string means the user wants to clear the key
+		elif raw.get("dispatcher", {}).get("admin_api_key") == "":
+			raw["dispatcher"]["admin_api_key"] = None
 		try:
 			new_config = parse_config(raw)
 		except Exception as exc:  # noqa: BLE001
@@ -243,7 +281,6 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		except Exception as exc:  # noqa: BLE001
 			raise HTTPException(status_code=500, detail=f"Failed to write config: {exc}") from exc
 
-		nonlocal config_obj, dispatcher
 		config_obj = new_config
 		dispatcher = Dispatcher(config_obj)
 
@@ -310,7 +347,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/config\" style=\"color:#9ca3af; text-decoration:none;\">Config</a>
 				<span style=\"color:#4b5563;\">·</span>
-				<a href=\"/decisions\" style=\"color:#9ca3af; text-decoration:none;\">Decisions</a>
+				<a href=\"/decisions/ui\" style=\"color:#9ca3af; text-decoration:none;\">Decisions</a>
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/metrics\" style=\"color:#9ca3af; text-decoration:none;\">Metrics</a>
 				<span style=\"color:#4b5563;\">·</span>
@@ -1059,6 +1096,142 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			limit = 50
 		return dispatcher.get_decisions(limit=limit)
 
+	@app.get("/decisions/ui", response_class=HTMLResponse)
+	async def decisions_ui(_: None = Depends(require_admin)) -> str:
+		"""Full-page HTML view of the decision history."""
+
+		return """<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+	<meta charset=\"UTF-8\" />
+	<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+	<title>Dispatcher — Decision History</title>
+	<style>
+		body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: #0f172a; color: #e5e7eb; }
+		header { padding: 1rem 2rem; background: #020617; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
+		main { padding: 1.5rem 2rem; }
+		h1 { font-size: 1.4rem; margin: 0; }
+		.muted { color: #9ca3af; font-size: 0.8rem; }
+		.small { font-size: 0.78rem; }
+		.monospace { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.8rem; }
+		.card { background: #020617; border-radius: 0.75rem; padding: 1rem 1.25rem; border: 1px solid #1e293b; box-shadow: 0 10px 20px rgba(15,23,42,0.6); }
+		table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+		th, td { padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+		th { background: #020617; border-bottom: 1px solid #1f2937; position: sticky; top: 0; z-index: 1; }
+		tr:nth-child(even) { background: #020617; }
+		tr:nth-child(odd) { background: #020617; }
+		tr:hover { background: #111827; }
+		.badge { border-radius: 999px; padding: 0.15rem 0.5rem; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }
+		.badge-accepted { background: #16a34a33; color: #4ade80; }
+		.badge-rejected { background: #b91c1c33; color: #fca5a5; }
+		.badge-failed { background: #ca8a0433; color: #facc15; }
+		a { color: #9ca3af; text-decoration: none; }
+		a:hover { color: #e5e7eb; }
+		.controls { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+		select { border-radius: 0.5rem; border: 1px solid #1f2937; padding: 0.3rem 0.5rem; background: #0f172a; color: #e5e7eb; font-size: 0.8rem; }
+	</style>
+</head>
+<body>
+	<header>
+		<div>
+			<h1>Decision History</h1>
+			<div class=\"muted\">Routing outcomes for all submitted download requests</div>
+		</div>
+		<nav class=\"small\" style=\"display:flex; gap:0.5rem; align-items:center;\">
+			<a href=\"/\">Dashboard</a>
+			<span style=\"color:#4b5563;\">·</span>
+			<a href=\"/config\">Config</a>
+			<span style=\"color:#4b5563;\">·</span>
+			<a href=\"/decisions/ui\" style=\"color:#e5e7eb;\">Decisions</a>
+			<span style=\"color:#4b5563;\">·</span>
+			<a href=\"/metrics\">Metrics</a>
+			<span style=\"color:#4b5563;\">·</span>
+			<a href=\"/health\">/health</a>
+		</nav>
+	</header>
+	<main>
+		<section class=\"card\">
+			<div class=\"controls\">
+				<div class=\"muted\">Show last</div>
+				<select id=\"limit-select\">
+					<option value=\"50\">50</option>
+					<option value=\"100\">100</option>
+					<option value=\"200\">200</option>
+				</select>
+				<div class=\"muted\">decisions &nbsp;·&nbsp; Auto-refreshes every 10 seconds</div>
+				<div id=\"last-updated\" class=\"muted\" style=\"margin-left:auto;\"></div>
+			</div>
+			<table>
+				<thead>
+					<tr>
+						<th>Time</th>
+						<th>Request name</th>
+						<th>Category</th>
+						<th>Size (GiB)</th>
+						<th>Status</th>
+						<th>Selected node</th>
+						<th>Reason</th>
+					</tr>
+				</thead>
+				<tbody id=\"decisions-body\"><tr><td colspan=\"7\" class=\"muted\" style=\"text-align:center;\">Loading…</td></tr></tbody>
+			</table>
+		</section>
+	</main>
+	<script>
+		const limitSelect = document.getElementById('limit-select');
+		const decisionsBody = document.getElementById('decisions-body');
+		const lastUpdated = document.getElementById('last-updated');
+
+		async function fetchDecisions() {
+			const limit = limitSelect.value || 50;
+			try {
+				const res = await fetch('/decisions?limit=' + limit);
+				if (!res.ok) throw new Error('HTTP ' + res.status);
+				const data = await res.json();
+				decisionsBody.innerHTML = '';
+				if (data.length === 0) {
+					const tr = document.createElement('tr');
+					tr.innerHTML = '<td colspan=\"7\" class=\"muted\" style=\"text-align:center;\">No decisions recorded yet.</td>';
+					decisionsBody.appendChild(tr);
+				} else {
+					// Render newest first for the full-page view
+					for (const rec of [...data].reverse()) {
+						const tr = document.createElement('tr');
+						const d = new Date(rec.timestamp * 1000);
+						const timeStr = d.toLocaleString(undefined, {
+							month: 'short', day: 'numeric',
+							hour: '2-digit', minute: '2-digit', second: '2-digit',
+						});
+						const size = typeof rec.size_estimate_gb === 'number' ? rec.size_estimate_gb.toFixed(1) : rec.size_estimate_gb;
+						const badgeClass = rec.status === 'accepted' ? 'badge badge-accepted'
+							: rec.status === 'rejected' ? 'badge badge-rejected'
+							: 'badge badge-failed';
+						tr.innerHTML = `
+							<td class=\"small monospace\">${timeStr}</td>
+							<td class=\"small monospace\" style=\"max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;\" title=\"${rec.request_name}\">${rec.request_name}</td>
+							<td class=\"small\">${rec.request_category}</td>
+							<td class=\"small\">${size}</td>
+							<td class=\"small\"><span class=\"${badgeClass}\">${rec.status}</span></td>
+							<td class=\"small monospace\">${rec.selected_node || '—'}</td>
+							<td class=\"small muted\" style=\"max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;\" title=\"${rec.reason}\">${rec.reason}</td>
+						`;
+						decisionsBody.appendChild(tr);
+					}
+				}
+				lastUpdated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+			} catch (err) {
+				console.error(err);
+				decisionsBody.innerHTML = '<tr><td colspan=\"7\" class=\"muted\" style=\"text-align:center;\">Error loading decisions: ' + err + '</td></tr>';
+			}
+		}
+
+		limitSelect.addEventListener('change', fetchDecisions);
+		fetchDecisions();
+		setInterval(fetchDecisions, 10000);
+	</script>
+</body>
+</html>"""
+
 	@app.post("/config/test/node", response_model=NodeStatus)
 	async def test_node_connection(node: NodeConfigModel, _: None = Depends(require_admin)) -> NodeStatus:
 		"""Test connectivity to a qBittorrent node using the provided settings.
@@ -1176,7 +1349,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/config\" style=\"color:#9ca3af; text-decoration:none;\">Config</a>
 				<span style=\"color:#4b5563;\">·</span>
-				<a href=\"/decisions\" style=\"color:#9ca3af; text-decoration:none;\">Decisions</a>
+				<a href=\"/decisions/ui\" style=\"color:#9ca3af; text-decoration:none;\">Decisions</a>
 				<span style=\"color:#4b5563;\">·</span>
 				<a href=\"/metrics\" style=\"color:#9ca3af; text-decoration:none;\">Metrics</a>
 				<span style=\"color:#4b5563;\">·</span>
@@ -1207,6 +1380,8 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<input id=\"max_retries\" type=\"number\" min=\"1\" />
 				<label for=\"save_path\">Override save path (optional)</label>
 				<input id=\"save_path\" type=\"text\" placeholder=\"/downloads\" />
+				<label for=\"admin_api_key\">Admin API key (optional)</label>
+				<input id=\"admin_api_key\" type=\"password\" placeholder=\"Leave blank to disable authentication\" />
 			</section>
 
 			<section class=\"card\">
@@ -1319,6 +1494,16 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<input id=\"prowlarr_api_key\" type=\"password\" placeholder=\"Your Prowlarr API key\" />
 			</section>
 		</div>
+		<section class=\"card\" style=\"margin-top:1.25rem;\">
+			<h2>Messaging services</h2>
+			<div class=\"muted\">
+				Configure notification services (Discord, Slack, Telegram). Each row is one service.
+			</div>
+			<div id=\"messaging-container\"></div>
+			<div class=\"row-actions\">
+				<button type=\"button\" class=\"secondary\" id=\"add-messaging\">Add service</button>
+			</div>
+		</section>
 		<section class=\"card\" style=\"max-width:960px; margin:1.25rem auto 0;\">
 			<div class=\"muted\">Changes are validated server-side and applied in-memory and on disk.</div>
 			<div style=\"margin-top:0.75rem;\">
@@ -1332,8 +1517,10 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		const statusEl = document.getElementById('status');
 		const nodesContainer = document.getElementById('nodes-container');
 		const arrContainer = document.getElementById('arr-container');
+		const messagingContainer = document.getElementById('messaging-container');
 		const addNodeBtn = document.getElementById('add-node');
 		const addArrBtn = document.getElementById('add-arr');
+		const addMessagingBtn = document.getElementById('add-messaging');
 		const saveBtn = document.getElementById('save');
 		const reloadBtn = document.getElementById('reload');
 
@@ -1342,9 +1529,67 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 			statusEl.style.color = isError ? '#fecaca' : '#9ca3af';
 		}
 
+		function createMessagingRow(svc) {
+			const row = document.createElement('div');
+			row.className = 'row';
+			row.style.gridTemplateColumns = 'repeat(5, minmax(0, 1fr))';
+			row.style.marginTop = '0.5rem';
+			const isDiscordOrSlack = !svc?.type || svc?.type === 'discord' || svc?.type === 'slack';
+			const isTelegram = svc?.type === 'telegram';
+			row.innerHTML = `
+				<div>
+					<label class="muted">Name</label>
+					<input class="svc-name" type="text" placeholder="my-discord" value="${svc?.name || ''}">
+				</div>
+				<div>
+					<label class="muted">Type</label>
+					<select class="svc-type">
+						<option value="discord" ${svc?.type === 'discord' ? 'selected' : ''}>Discord</option>
+						<option value="slack" ${svc?.type === 'slack' ? 'selected' : ''}>Slack</option>
+						<option value="telegram" ${svc?.type === 'telegram' ? 'selected' : ''}>Telegram</option>
+					</select>
+				</div>
+				<div class="svc-webhook-group">
+					<label class="muted">Webhook URL</label>
+					<input class="svc-webhook-url" type="text" placeholder="https://discord.com/api/webhooks/..." value="${svc?.webhook_url || ''}" ${isTelegram ? 'disabled' : ''}>
+				</div>
+				<div class="svc-bot-group">
+					<label class="muted">Bot Token (Telegram)</label>
+					<input class="svc-bot-token" type="password" placeholder="Bot token" value="${svc?.bot_token || ''}" ${!isTelegram ? 'disabled' : ''}>
+				</div>
+				<div>
+					<label class="muted">Chat ID (Telegram)</label>
+					<input class="svc-chat-id" type="text" placeholder="Chat ID" value="${svc?.chat_id || ''}" ${!isTelegram ? 'disabled' : ''}>
+					<div style="display:flex; gap:0.3rem; margin-top:0.3rem; align-items:center;">
+						<label class="muted" style="margin:0;">Enabled</label>
+						<select class="svc-enabled" style="width:auto; padding:0.2rem 0.4rem; font-size:0.75rem;">
+							<option value="true" ${svc?.enabled !== false ? 'selected' : ''}>Yes</option>
+							<option value="false" ${svc?.enabled === false ? 'selected' : ''}>No</option>
+						</select>
+						<button type="button" class="danger svc-remove" style="padding-inline:0.6rem; font-size:0.7rem; margin:0;">Remove</button>
+					</div>
+				</div>
+			`;
+			// Toggle fields based on type
+			const typeSelect = row.querySelector('.svc-type');
+			const webhookInput = row.querySelector('.svc-webhook-url');
+			const botTokenInput = row.querySelector('.svc-bot-token');
+			const chatIdInput = row.querySelector('.svc-chat-id');
+			typeSelect.addEventListener('change', () => {
+				const isTg = typeSelect.value === 'telegram';
+				webhookInput.disabled = isTg;
+				botTokenInput.disabled = !isTg;
+				chatIdInput.disabled = !isTg;
+			});
+			row.querySelector('.svc-remove').addEventListener('click', () => row.remove());
+			return row;
+		}
+
 		function createNodeRow(node) {
 			const row = document.createElement('div');
 			row.className = 'row';
+			// 6 columns: name, url, username, password, min_free_gb, weight+actions
+			row.style.gridTemplateColumns = 'repeat(6, minmax(0, 1fr))';
 			row.innerHTML = `
 				<div>
 					<label class="muted">Name</label>
@@ -1365,6 +1610,10 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				<div>
 					<label class="muted">Min free (GiB)</label>
 					<input class="node-minfree" type="number" step="1" min="0" value="${node?.min_free_gb ?? 0}">
+				</div>
+				<div>
+					<label class="muted">Weight</label>
+					<input class="node-weight" type="number" step="0.1" min="0.1" value="${node?.weight ?? 1.0}">
 					<div style="display:flex; gap:0.3rem; margin-top:0.3rem;">
 						<button type="button" class="secondary node-test" style="padding-inline:0.6rem; font-size:0.7rem;">Test</button>
 						<button type="button" class="danger node-remove" style="padding-inline:0.6rem; font-size:0.7rem;">Remove</button>
@@ -1509,12 +1758,20 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		}
 
 		function buildPayloadFromForm() {
+			const apiKeyInput = document.getElementById('admin_api_key');
+			const apiKeyVal = apiKeyInput.value.trim();
+			const currentKeyIsSet = apiKeyInput.placeholder && apiKeyInput.placeholder.includes('(set');
+			// Empty field + key already configured → send sentinel to preserve it.
+			// Empty field + no key configured → null (no key).
+			// Non-empty field → use the new value.
+			const admin_api_key = apiKeyVal ? apiKeyVal : (currentKeyIsSet ? '********' : null);
 			const dispatcher = {
 				 disk_weight: parseFloat(document.getElementById('disk_weight').value || '1') || 1,
 				 download_weight: parseFloat(document.getElementById('download_weight').value || '2') || 2,
 				 bandwidth_weight: parseFloat(document.getElementById('bandwidth_weight').value || '0.1') || 0.1,
 				 max_downloads: parseInt(document.getElementById('max_downloads').value || '50', 10),
 				 min_score: parseFloat(document.getElementById('min_score').value || '-1') || -1,
+				 admin_api_key,
 				 submission: {
 					 max_retries: parseInt(document.getElementById('max_retries').value || '2', 10),
 					 save_path: document.getElementById('save_path').value || null,
@@ -1530,10 +1787,12 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				const password = row.querySelector('.node-password').value;
 				const minFreeVal = parseFloat(row.querySelector('.node-minfree').value || '0');
 				const min_free_gb = Number.isNaN(minFreeVal) ? 0 : minFreeVal;
+				const weightVal = parseFloat(row.querySelector('.node-weight').value || '1');
+				const weight = Number.isNaN(weightVal) || weightVal <= 0 ? 1.0 : weightVal;
 				if (!name || !url) {
 					return;
 				}
-				nodes.push({ name, url, username, password, min_free_gb });
+				nodes.push({ name, url, username, password, min_free_gb, weight });
 			});
 
 			const arr_instances = [];
@@ -1549,13 +1808,26 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				arr_instances.push({ name, type, url, api_key });
 			});
 
+			const messaging_services = [];
+			document.querySelectorAll('.svc-name').forEach((nameInput) => {
+				const row = nameInput.closest('.row');
+				const name = nameInput.value.trim();
+				if (!name) return;
+				const type = row.querySelector('.svc-type').value || 'discord';
+				const enabled = row.querySelector('.svc-enabled').value === 'true';
+				const webhook_url = row.querySelector('.svc-webhook-url').value.trim() || null;
+				const bot_token = row.querySelector('.svc-bot-token').value.trim() || null;
+				const chat_id = row.querySelector('.svc-chat-id').value.trim() || null;
+				messaging_services.push({ name, type, enabled, webhook_url, bot_token, chat_id });
+			});
+
 			const integrations = {
 				n8n: {
 					enabled: document.getElementById('n8n_enabled').value === 'true',
 					webhook_url: document.getElementById('n8n_webhook_url').value || null,
 					api_key: document.getElementById('n8n_api_key').value || null,
 				},
-				messaging_services: [],
+				messaging_services,
 				overseerr: {
 					enabled: document.getElementById('overseerr_enabled').value === 'true',
 					url: document.getElementById('overseerr_url').value || '',
@@ -1610,6 +1882,12 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 				(cfg.arr_instances || []).forEach((a) => {
 					arrContainer.appendChild(createArrRow(a));
 				});
+
+				// Load messaging services
+				messagingContainer.innerHTML = '';
+				((cfg.integrations && cfg.integrations.messaging_services) || []).forEach((svc) => {
+					messagingContainer.appendChild(createMessagingRow(svc));
+				});
 				
 				// Load integrations config
 				if (cfg.integrations) {
@@ -1637,6 +1915,12 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 					document.getElementById('check_quality_profiles').value = cfg.request_tracking.check_quality_profiles ? 'true' : 'false';
 					document.getElementById('send_suggestions').value = cfg.request_tracking.send_suggestions ? 'true' : 'false';
 				}
+
+				// Load dispatcher admin_api_key (never round-trips the actual value for security)
+				document.getElementById('admin_api_key').value = '';
+				document.getElementById('admin_api_key').placeholder = cfg.dispatcher.admin_api_key
+					? '(set — enter new value to change)'
+					: 'Leave blank to disable authentication';
 				
 				setStatus('Loaded current configuration');
 			} catch (err) {
@@ -1674,6 +1958,9 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 		});
 		addArrBtn.addEventListener('click', () => {
 			arrContainer.appendChild(createArrRow({ type: 'sonarr' }));
+		});
+		addMessagingBtn.addEventListener('click', () => {
+			messagingContainer.appendChild(createMessagingRow({ type: 'discord', enabled: true }));
 		});
 		saveBtn.addEventListener('click', saveConfigJson);
 		reloadBtn.addEventListener('click', loadConfigJson);
