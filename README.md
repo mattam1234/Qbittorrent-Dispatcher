@@ -55,7 +55,8 @@ Get up and running in minutes:
 git clone https://github.com/mattam1234/Qbittorrent-Dispatcher.git
 cd Qbittorrent-Dispatcher
 
-# Edit config.yaml with your qBittorrent nodes and ARR instances
+# Create your live config from the tracked example, then fill it in
+cp config.example.yaml config.yaml
 nano config.yaml
 
 # Start the dispatcher
@@ -67,6 +68,7 @@ docker compose up -d
 ### Using Docker
 
 ```bash
+cp config.example.yaml config.yaml   # then edit it
 docker build -t qb-dispatcher .
 docker run --rm -p 8000:8000 -v ${PWD}/config.yaml:/app/config.yaml qb-dispatcher
 ```
@@ -117,6 +119,7 @@ The dispatcher acts as a smart proxy between your *arr applications (Sonarr/Rada
 ### Running Locally
 
 ```bash
+cp config.example.yaml config.yaml   # then edit it
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -124,9 +127,14 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ### Docker
 
 ```bash
+cp config.example.yaml config.yaml   # then edit it
 docker build -t qb-dispatcher .
 docker run --rm -p 8000:8000 -v ${PWD}/config.yaml:/app/config.yaml qb-dispatcher
 ```
+
+`config.yaml` is **not** baked into the image and is **not** tracked in git. It must
+exist on the host and be mounted at `/app/config.yaml`, otherwise the dispatcher
+exits at startup with `Configuration file not found`.
 
 ### Docker Compose
 
@@ -139,12 +147,20 @@ docker compose up -d
 This will:
 
 - Run the dispatcher as `qb-dispatcher` (by default exposed on host port 8001 → container 8000)
-- Mount `config.yaml` into the container at `/app/config.yaml` (read/write, for the web configurator)
+- Mount the host's `config.yaml` into the container at `/app/config.yaml` (read/write, for the web configurator). Create it first with `cp config.example.yaml config.yaml` — if the host file is missing, Docker creates a directory there and the container fails to start.
 - Attach it to a `qbnet` bridge network (for co-locating qBittorrent/Sonarr/Radarr containers)
 
 ## Configuration
 
-Edit [config.yaml](config.yaml) to define dispatcher weights, security, qBittorrent nodes, and optional *arr instances.
+Copy the tracked template [config.example.yaml](config.example.yaml) to `config.yaml`,
+then edit it to define dispatcher weights, security, qBittorrent nodes, and optional
+*arr instances.
+
+> **`config.yaml` is gitignored and must stay that way.** It is the live config
+> file: the web configurator writes your real qBittorrent passwords and *arr API
+> keys back into it. Put placeholders in `config.example.yaml` and real values
+> only in `config.yaml`. If you ever need to move a host between checkouts, copy
+> `config.yaml` by hand — it will not come down with a `git pull`.
 
 ### Configuration File Structure
 
@@ -386,7 +402,7 @@ Configure `arr_instances` as shown in the configuration section above.
 	- `GET /config/raw` and `POST /config/raw` – raw YAML view / editor.
 
 - Admin API key
-	- If `dispatcher.admin_api_key` is set in [config.yaml](config.yaml), the following endpoints require header `X-API-Key: <value>`:
+	- If `dispatcher.admin_api_key` is set in `config.yaml`, the following endpoints require header `X-API-Key: <value>`:
 		- `/submit`, `/nodes`, `/arr`, `/decisions`
 		- `/config`, `/config/json`, `/config/raw`, `/config/test/node`, `/config/test/arr`
 		- `/debug/decision`

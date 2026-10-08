@@ -1,0 +1,86 @@
+# Example configuration for the Space-Aware qBittorrent Dispatcher.
+#
+# Copy this file to config.yaml and fill in your own values:
+#
+#   cp config.example.yaml config.yaml
+#
+# config.yaml is gitignored on purpose. It is the LIVE config file: the web
+# configurator at /config writes your real qBittorrent and *arr credentials
+# back into it. Never commit it, and never put a real credential in this
+# example file.
+#
+# Every CHANGE_ME below must be replaced before first start.
+
+dispatcher:
+  # Relative weights used to score candidate nodes.
+  disk_weight: 1.0
+  download_weight: 2.0
+  bandwidth_weight: 0.1
+  # Reject submissions once a node is at or above this many active downloads.
+  max_downloads: 50
+  # Reject a submission when the best node still scores below this.
+  min_score: -1.0
+  # Shared secret for the management endpoints. When set, those endpoints
+  # require the header `X-API-Key: <value>`. Leave null to disable the check
+  # ONLY if the dispatcher is unreachable from outside the host.
+  # Generate one with: openssl rand -hex 32
+  admin_api_key: CHANGE_ME_ADMIN_API_KEY
+  submission:
+    max_retries: 2
+    # Absolute path on the qBittorrent node where downloads should land.
+    # null lets each node use its own configured default.
+    save_path: null
+
+# One entry per qBittorrent instance the dispatcher may submit to.
+# At least one node is required; startup fails without one.
+nodes:
+  - name: CHANGE_ME_NODE_NAME
+    url: http://CHANGE_ME_HOST:8080
+    username: CHANGE_ME_USERNAME
+    password: CHANGE_ME_PASSWORD
+    # Skip this node when it has less than this much free space.
+    min_free_gb: 0.0
+    # Multiplies this node's final score; raise it to prefer the node.
+    weight: 1.0
+
+# Optional Sonarr/Radarr instances used for duplicate and quality-profile checks.
+# Each entry's url points at the API root, e.g. http://host:8989/api/v3
+arr_instances: []
+#  - name: sonarr
+#    type: sonarr
+#    url: http://CHANGE_ME_HOST:8989/api/v3
+#    api_key: CHANGE_ME_SONARR_API_KEY
+#  - name: radarr
+#    type: radarr
+#    url: http://CHANGE_ME_HOST:7878/api/v3
+#    api_key: CHANGE_ME_RADARR_API_KEY
+
+integrations:
+  n8n:
+    enabled: false
+    webhook_url: null
+    api_key: null
+  # Notification targets. type is one of: discord, slack, telegram.
+  messaging_services: []
+  #  - name: discord-downloads
+  #    type: discord
+  #    webhook_url: CHANGE_ME_DISCORD_WEBHOOK_URL
+  #    enabled: true
+  overseerr:
+    enabled: false
+    url: ''
+    api_key: ''
+  jellyseerr:
+    enabled: false
+    url: ''
+    api_key: ''
+  prowlarr:
+    enabled: false
+    url: ''
+    api_key: ''
+
+request_tracking:
+  enabled: true
+  check_duplicates: true
+  check_quality_profiles: true
+  send_suggestions: true

@@ -10,6 +10,11 @@ services:
     ports:
       - "8001:8000"
     volumes:
+      # Live config, mounted read/write so the web configurator can save to it.
+      # ./config.yaml is gitignored — create it before the first `up` with:
+      #   cp config.example.yaml config.yaml
+      # If the file does not exist, Docker silently creates a DIRECTORY at that
+      # path and the dispatcher fails to start.
       - ./config.yaml:/app/config.yaml
     environment:
       # Example: set timezone inside the container

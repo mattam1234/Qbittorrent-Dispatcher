@@ -31,3 +31,16 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+
+# Live configuration and secrets.
+# config.yaml is the live config file: the web configurator writes real
+# qBittorrent and *arr credentials back into it. Track config.example.yaml
+# instead and keep the real one out of git.
+config.yaml
+*.env
+.env
+.env.*
+!.env.example
+secrets.yaml
+*.pem
+*.key

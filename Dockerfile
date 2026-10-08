@@ -9,7 +9,12 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-COPY config.yaml ./config.yaml
+
+# config.yaml is deliberately NOT baked into the image. It is the live config
+# file holding real credentials, so it is gitignored and supplied at runtime by
+# mounting it at /app/config.yaml (see docker-compose.yml). The example is
+# copied in for reference only; the app never reads it.
+COPY config.example.yaml ./config.example.yaml
 
 EXPOSE 8000
 
